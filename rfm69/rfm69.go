@@ -156,7 +156,7 @@ func (d *Device) GetMode() uint8 {
 
 // WaitForMode waits for operation mode to be changed (or timeout)
 func (d *Device) WaitForMode() error {
-	println("waitformode start")
+	//	println("waitformode start")
 	var loop = uint(0)
 	for {
 		reg, err := d.ReadReg(REG_IRQFLAGS1)
@@ -168,7 +168,7 @@ func (d *Device) WaitForMode() error {
 			return errors.New("WaitForMode Timeout")
 		}
 		if (reg & RF_IRQFLAGS1_MODEREADY) > 0 {
-			println("waitformode ok")
+			//			println("waitformode ok")
 			return nil
 		}
 
@@ -359,17 +359,24 @@ func (d *Device) Receive() ([]uint8, error) {
 	if m == RFM69_MODE_RX {
 		a, _ := d.ReadReg(REG_IRQFLAGS2)
 		if (a & RF_IRQFLAGS2_PAYLOADREADY) > 0 {
-			d.SetMode(RFM69_MODE_STANDBY)
 
+			d.SetMode(RFM69_MODE_STANDBY)
+			/*
+				if (a & RF_IRQFLAGS2_CRCOK) > 0 {
+					println("CRC OK")
+				} else {
+					println("CRC NOT OK")
+				}
+			*/
 			d.nssPin.Low()
 			d.spiBus.Transfer(REG_FIFO)
 			payloadLen, _ := d.spiBus.Transfer(0)
-			println("INT: Payloadlen:", payloadLen)
+			//println("INT: Payloadlen:", payloadLen)
 
 			for i := uint8(0); i < payloadLen; i++ {
 				c, _ := d.spiBus.Transfer(0)
 				data = append(data, c)
-				println("INT: DATA:", c)
+				//println("INT: DATA:", c)
 			}
 
 		} else {
