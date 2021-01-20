@@ -143,7 +143,8 @@ func (d *Device) TxLora(payload []byte) {
 	// Are we already in Lora mode ?
 	r := d.ReadRegister(REG_OP_MODE)
 	if (r & OPMODE_LORA) != OPMODE_LORA {
-		println("LoraTx Error 1 ... Aborting, opmode=", d.ReadRegister(REG_OP_MODE))
+		println("FATAL: module is not in LORA MODE")
+		return
 	}
 	// Switch to standby mode
 	d.SetOpMode(OPMODE_STANDBY)
@@ -178,56 +179,22 @@ func (d *Device) GetVersion() uint8 {
 	return (d.ReadRegister(REG_VERSION))
 }
 
-// SendPacket transmits a packet
-// Note that this will return before the packet has finished being sent,
-// use the IsTransmitting() function if you need to know when sending is done.
-func (d *Device) SendPacket(packet []byte) {
-
-	// wait for any previous SendPacket to be done
-	for d.IsTransmitting() {
-		time.Sleep(1 * time.Millisecond)
-	}
-
-	// reset TX_DONE, FIFO address and payload length
-	d.WriteRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK)
-	d.WriteRegister(REG_FIFO_ADDR_PTR, 0)
-	d.WriteRegister(REG_PAYLOAD_LENGTH, 0)
-
-	if uint8(len(packet)) > MAX_PKT_LENGTH {
-		packet = packet[0:MAX_PKT_LENGTH]
-	}
-
-	for i := 0; i < len(packet); i++ {
-		d.WriteRegister(REG_FIFO, packet[i])
-	}
-
-	d.WriteRegister(REG_PAYLOAD_LENGTH, uint8(len(packet)))
-	d.SetOpMode(OPMODE_LORA | OPMODE_TX)
-}
-
 // IsTransmitting tests if a packet transmission is in progress
 func (d *Device) IsTransmitting() bool {
 	return (d.ReadRegister(REG_OP_MODE) & OPMODE_TX) == OPMODE_TX
 }
 
-// ParsePacket returns the size of a received packet waiting to be read
-// if size=0, this is explicit header mode (payload size is specified in packet header )
-// if size>0, this is implicit header mode (payload size is not in packet header and specified by user)
-// Refs: https://github.com/adafruit/RadioHead/blob/master/RH_RF95.cpp
 func (d *Device) DioIntHandler() {
 
 	// Read the interrupt register
 	irqFlags := d.ReadRegister(REG_IRQ_FLAGS)
-	//println("DioIntHandler: irqStatus=", irqFlags)
 
-	if (irqFlags & IRQ_RX_DONE_MASK) == IRQ_RX_DONE_MASK {
-		//	println("DioIntHandler: RxDoneMask Found")
-
+	// We have a packet
+	if (irqFlags & IRQ_RX_DONE_MASK) > 0 {
+		println("Handler: RX_DONE")
 		d.rxPktBuf = d.rxPktBuf[:0] // Clear slice
 
-		// Read packet size
 		packetLength := d.ReadRegister(REG_RX_NB_BYTES)
-		//	println("DioIntHandler: RX Packet size: ", packetLength)
 
 		// Reset the fifo read ptr to the beginning of the packet
 		d.WriteRegister(REG_FIFO_ADDR_PTR, d.ReadRegister(REG_FIFO_RX_CURRENT_ADDR))
@@ -235,19 +202,31 @@ func (d *Device) DioIntHandler() {
 		for i := uint8(0); i < packetLength; i++ {
 			d.rxPktBuf = append(d.rxPktBuf, d.ReadRegister(REG_FIFO))
 		}
-		//	println("DioIntHAndler: rx packet: ", string(d.rxPktBuf))
-		d.rxPktChan <- d.rxPktBuf
-		//	println("DioIntHAndler: xxx")
+		if d.rxPktChan != nil {
+			if d.rxPktBuf != nil {
+				d.rxPktChan <- d.rxPktBuf
+			} else {
+				println("pkt is null")
+			}
+		} else {
+			println("chan is nil")
+		}
 
-		// clear IRQ's
-		d.WriteRegister(REG_IRQ_FLAGS, irqFlags)
-
+	} else if (irqFlags & IRQ_TX_DONE_MASK) > 0 {
+		println("Handler: TX_DONE")
+	} else if (irqFlags & IRQ_RX_TMOUT_MASK) > 0 {
+		println("Handler: RX_TMOUT")
+	} else {
+		println("Handler: irqflags:", irqFlags)
 	}
+
+	// clear IRQ's
+	d.WriteRegister(REG_IRQ_FLAGS, irqFlags)
 
 	// Sigh: on some processors, for some unknown reason, doing this only once does not actually
 	// clear the radio's interrupt flag. So we do it twice. Why?
-	d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
-	d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
+	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
+	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
 
 }
 
@@ -344,14 +323,14 @@ func (d *Device) SetOpMode(mode uint8) {
 // OpModeLora switch radio to Lora mode
 func (d *Device) OpModeLora() {
 	r := OPMODE_LORA
-	r |= 0x8 // High frequency
+	//	r |= 0x8 // High frequency
 	d.WriteRegister(REG_OP_MODE, r)
 }
 
 // OpModeFSK switch radio to FSK mode
 func (d *Device) OpModeFSK() {
 	r := uint8(0)
-	r |= 0x8 // High frequency
+	//	r |= 0x8 // High frequency
 	d.WriteRegister(REG_OP_MODE, r)
 }
 
@@ -374,12 +353,12 @@ func (d *Device) ReceiveSingle() {
 }
 
 // Standby puts the sx127x device into lora + standby mode
-func (d *Device) Standby() {
+func (d *Device) LoraStandby() {
 	d.SetOpMode(OPMODE_LORA | OPMODE_STANDBY)
 }
 
 // Sleep puts the sx127x device into sleep mode
-func (d *Device) Sleep() {
+func (d *Device) LoraSleep() {
 	d.SetOpMode(OPMODE_LORA | OPMODE_SLEEP)
 }
 
@@ -471,12 +450,12 @@ func (d *Device) SetInvertedIQ(invert bool) {
 	}
 }
 
-func (d *Device) GoSingleReceive() {
+func (d *Device) GoReceive() {
 	// ReceiveSingle
-	d.WriteRegister(REG_DIO_MAPPING_1, 0)       //Change DIO 0 back to RxDone
-	d.WriteRegister(0x33, 0x67)                 // Set IQ
-	d.WriteRegister(0x3B, 0x19)                 // Set IQ
-	d.SetOpMode(OPMODE_LORA | OPMODE_RX_SINGLE) // Single RX Mode
+	d.WriteRegister(REG_DIO_MAPPING_1, 0) //Change DIO0 back to RxDone, DIO1 RxTmeout
+	d.WriteRegister(0x33, 0x67)           // Set IQ
+	d.WriteRegister(0x3B, 0x19)           // Set IQ
+	d.SetOpMode(OPMODE_LORA | OPMODE_RX)  // Single RX Mode
 }
 
 /*
