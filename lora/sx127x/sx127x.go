@@ -1,37 +1,34 @@
 // Package sx127x provides a driver for SX127x LoRa transceivers.
-//
-// Datasheet:
-// https://www.semtech.com/uploads/documents/DS_SX1276-7-8-9_W_APP_V6.pdf
-//
-// LoRa Configuration Parameters:
-//
-// Frequency: is the frequency the tranceiver uses. Valid frequencies depend on
-//  the type of LoRa module, typically around 433MHz or 866MHz. It has
-//  a granularity of about 23Hz, how close it can be to others depends on the
-//  Bandwidth being used.
-//
-// Bandwidth: is the bandwidth used for tranmissions, ranging from 7k8 to 512k
-//  A higher bandwidth gives faster transmissions, lower gives greater range
-//
-// SpreadingFactor: is how a transmission is spread over the spectrum. It ranges
-//  from 6 to 12, a higher value gives greater range but slower transmissions.
-//
-// CodingRate: is the cyclic error coding used to improve the robustness of the
-//  transmission. It ranges from 5 to 8, a higher value gives greater
-//  reliability but slower transmissions.
-//
-// TxPower: is the power used for the transmission, ranging from 1 to 20.
-//  A higher power gives greater range. Regulations in your country likely
-//  limit the maximum power permited.
-//
-// Presently this driver is only synchronous and so does not use any DIOx pins
-//
+// https://electronics.stackexchange.com/questions/394296/can-t-get-simple-lora-receiver-to-work
 package sx127x
 
 import (
 	"errors"
 	"machine"
 	"time"
+)
+
+const (
+	debug = true
+)
+
+// This should be passed to the DioIntHandler
+// So we can keep track of the origin of interruption
+const (
+	IntDIO0 = 0
+	IntDIO1 = 1
+)
+
+// RadioEvent are send to application through a channel
+type RadioEvent struct {
+	EventType int
+	EventData []byte
+}
+
+const (
+	EventRxDone    = iota
+	EventTxDone    = iota
+	EventRxTimeout = iota
 )
 
 // Device wraps an SPI connection to a SX127x device.
@@ -41,8 +38,7 @@ type Device struct {
 	rstPin             machine.Pin
 	packetIndex        uint8
 	implicitHeaderMode bool
-	rxPktBuf           []byte
-	rxPktChan          chan []byte
+	radioEventChan     chan RadioEvent
 	cnf                Config
 }
 
@@ -63,35 +59,231 @@ type Config struct {
 	InvertIQTx           bool
 }
 
-const (
-	MAX_PACKET_SIZE = 255
-)
-
 // New creates a new SX127x connection. The SPI bus must already be configured.
 func New(spi machine.SPI, csPin machine.Pin, rstPin machine.Pin) Device {
-
 	k := Device{
 		spi:    spi,
 		csPin:  csPin,
 		rstPin: rstPin,
 	}
-
-	k.rxPktBuf = make([]byte, 0, MAX_PACKET_SIZE)
-	k.rxPktChan = make(chan []byte)
 	return k
+}
+
+// Reset re-initialize the sx127x device
+// sx1276 have nRST pin
+func (d *Device) Reset() {
+	d.rstPin.Low()
+	time.Sleep(100 * time.Millisecond)
+	d.rstPin.High()
+	time.Sleep(100 * time.Millisecond)
+}
+
+// ReadRegister reads register value
+func (d *Device) ReadRegister(reg uint8) uint8 {
+	d.csPin.Low()
+	d.spi.Tx([]byte{reg & 0x7f}, nil)
+	var value [1]byte
+	d.spi.Tx(nil, value[:])
+	d.csPin.High()
+	return value[0]
+}
+
+// WriteRegister writes value to register
+func (d *Device) WriteRegister(reg uint8, value uint8) uint8 {
+	var response [1]byte
+	d.csPin.Low()
+	d.spi.Tx([]byte{reg | 0x80}, nil)
+	d.spi.Tx([]byte{value}, response[:])
+	d.csPin.High()
+	return response[0]
+}
+
+// SetOpMode changes the sx1276 mode
+func (d *Device) OpMode(mode uint8) {
+	cur := d.ReadRegister(REG_OP_MODE)
+	new := (cur & (^OPMODE_MASK)) | mode
+	d.WriteRegister(REG_OP_MODE, new)
+	if debug {
+		chk := d.ReadRegister(REG_OP_MODE)
+		println("sx1276 : SetOpMode cur:", cur, " new:", new, "chk:", chk)
+	}
+}
+
+// SetOpMode changes the sx1276 mode
+func (d *Device) OpModeLora() {
+	d.WriteRegister(REG_OP_MODE, OPMODE_LORA)
+}
+
+// SetupLora configures sx127x Lora mode
+func (d *Device) SetupLora(loraCnf Config) error {
+
+	d.cnf = loraCnf
+	println("Setup Lora:")
+	println("Freq: ", d.cnf.Frequency, "CR: ", d.cnf.CodingRate, "SF: ", d.cnf.SpreadingFactor)
+
+	// Reset the device first
+	d.Reset()
+	if d.GetVersion() != 0x12 {
+		return errors.New("SX1276 module not found")
+	}
+
+	// Switch to Lora mode
+	d.OpModeLora()
+	d.OpMode(OPMODE_SLEEP)
+
+	// Access High Frequency Mode
+	d.SetLowFrequencyModeOn(false)
+
+	// Set PA Ramp time 50 uS
+	d.WriteRegister(REG_PA_RAMP, (d.ReadRegister(REG_PA_RAMP)&0xF0)|0x08) // set PA ramp-up time 50 uSec
+
+	// Enable power (manage Over Current, PA_Boost ... etc)
+	d.SetTxPower(11, true)
+
+	// Set Low Noise Amplifier to MAX
+	d.WriteRegister(REG_LNA, LNA_MAX_GAIN)
+
+	// Set Frequency
+	d.SetFrequency(d.cnf.Frequency)
+
+	// Set DataRate
+	d.SetBandwidth(d.cnf.Bandwidth)
+
+	//Set Coding Rate (TODO : Check)
+	d.SetCodingRate(d.cnf.CodingRate)
+
+	// Set implicit header
+	d.SetImplicitHeaderModeOn(false)
+
+	// Enable CRC
+	d.SetRxPayloadCrcOn(true)
+
+	// Disable IQ Polarization
+	d.SetInvertedIQ(false)
+
+	// Disable HOP PERIOD
+	d.SetHopPeriod(0x00)
+
+	// Continuous Mode
+	d.SetTxContinuousMode(false)
+
+	// Set Lora Sync
+	d.SetSyncWord(0x34)
+
+	//Set Max payload length (default value)
+	d.WriteRegister(REG_MAX_PAYLOAD_LENGTH, 0xFF)
+	// Mandatory in Implicit header Mode (default value)
+	d.WriteRegister(REG_PAYLOAD_LENGTH, 0x01)
+
+	// AGC On
+	d.SetAgcAutoOn(true)
+
+	// set FIFO base addresses
+	d.WriteRegister(REG_FIFO_TX_BASE_ADDR, 0)
+	d.WriteRegister(REG_FIFO_RX_BASE_ADDR, 0)
+	return nil
+}
+
+// TxLora sends a packet in Lora mode
+func (d *Device) TxLora(payload []byte) {
+
+	// Are we already in Lora mode ?
+	r := d.ReadRegister(REG_OP_MODE)
+	if (r & OPMODE_LORA) != OPMODE_LORA {
+		println("FATAL: module is not in LORA MODE")
+		return
+	}
+
+	// set the IRQ mapping DIO0=TxDone DIO1=NOP DIO2=NOP
+	d.WriteRegister(REG_DIO_MAPPING_1, MAP_DIO0_LORA_TXDONE|MAP_DIO1_LORA_NOP|MAP_DIO2_LORA_NOP)
+	// Clear all radio IRQ Flags
+	d.WriteRegister(REG_IRQ_FLAGS, 0xFF)
+	// Mask all but TxDone
+	d.WriteRegister(REG_IRQ_FLAGS_MASK, ^IRQ_LORA_TXDONE_MASK)
+
+	// initialize the payload size and address pointers
+	d.WriteRegister(REG_FIFO_TX_BASE_ADDR, 0)
+	d.WriteRegister(REG_FIFO_ADDR_PTR, 0)
+	d.WriteRegister(REG_PAYLOAD_LENGTH, uint8(len(payload)))
+
+	// Copy payload to FIFO // TODO: Bulk
+	for i := 0; i < len(payload); i++ {
+		d.WriteRegister(REG_FIFO, payload[i])
+	}
+	// Enable TX
+	//d.PrintRegisters(true)
+	println("sx127x : TxLora: swith to TX mode")
+	d.OpMode(OPMODE_TX)
+}
+
+//DioIntHandler should be called on DIO0/1 rising edge
+//intSource should be set to IntDIO0 or IntDIO1 consts
+//in case we need to track the origin of the interrupt
+func (d *Device) DioIntHandler(intSource int) {
+
+	irqFlags := d.ReadRegister(REG_IRQ_FLAGS)
+
+	var event *RadioEvent = nil
+
+	// We have a packet
+	if (irqFlags & IRQ_LORA_RXDONE_MASK) > 0 {
+
+		// Read current packet
+		buf := []byte{}
+		packetLength := d.ReadRegister(REG_RX_NB_BYTES)
+		d.WriteRegister(REG_FIFO_ADDR_PTR, d.ReadRegister(REG_FIFO_RX_CURRENT_ADDR)) // Reset FIFO Read Addr
+		for i := uint8(0); i < packetLength; i++ {
+			buf = append(buf, d.ReadRegister(REG_FIFO))
+		}
+		// Send RXDONE to the defined event channel
+		event = &RadioEvent{EventType: EventTxDone, EventData: buf}
+	} else if (irqFlags & IRQ_LORA_TXDONE_MASK) > 0 {
+		println("sx1276: TX_DONE int")
+		event = &RadioEvent{EventType: EventTxDone, EventData: nil}
+	} else if (irqFlags & IRQ_LORA_RXTOUT_MASK) > 0 {
+		println("sx1276: RX_TMOUT int")
+		event = &RadioEvent{EventType: EventRxTimeout, EventData: nil}
+	} else {
+		println("sx1276: irqflags:", irqFlags)
+	}
+
+	// Sent the event, if we have one
+	if event != nil && d.radioEventChan != nil {
+		d.radioEventChan <- *event
+	}
+
+	// clear IRQ's
+	d.WriteRegister(REG_IRQ_FLAGS, irqFlags)
+
+	// Sigh: on some processors, for some unknown reason, doing this only once does not actually
+	// clear the radio's interrupt flag. So we do it twice. Why?
+	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
+	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
 
 }
 
-// Initializes the LoRa module
+//-----------------------------------------------
+//-----------------------------------------------
+//-----------------------------------------------
+//-----------------------------------------------
+
+// SetRadioEventChan defines a channel so the driver can send its Radio Events
+func (d *Device) SetRadioEventChan(channel chan RadioEvent) {
+	d.radioEventChan = channel
+}
+
+// GetRadioEventChannel returns the current Radio Event channel
+func (d *Device) GetRadioEventChan() chan RadioEvent {
+	return d.radioEventChan
+}
+
+// Init reboots the SX1276 module and tries to read HW version
 func (d *Device) Init(cfg Config) (err error) {
 	d.cnf = cfg
 
 	d.csPin.High()
 	d.Reset()
 
-	if d.GetVersion() != 0x12 {
-		return errors.New("SX127x module not found")
-	}
 	return nil
 }
 
@@ -99,17 +291,13 @@ func (d *Device) Init(cfg Config) (err error) {
 func (d *Device) ConfigureLoraModem() {
 
 	// Sleep mode required to go LOra
-	d.SetOpMode(OPMODE_SLEEP)
+	d.OpMode(OPMODE_SLEEP)
 	// Set Lora mode (from sleep)
 	d.OpModeLora()
 	// Switch to standby mode
-	d.SetOpMode(OPMODE_STANDBY)
-	// Configure Frequency
-	d.ConfigureChannel(d.cnf.Frequency)
+	d.OpMode(OPMODE_STANDBY)
 	// Set Bandwidth
 	d.SetBandwidth(d.cnf.Bandwidth)
-	// Set Coding Rate
-	d.SetCodingRate(d.cnf.CodingRate)
 	// Disable IQ Polarization
 	d.SetInvertedIQ(false)
 	// Set implicit header
@@ -120,8 +308,7 @@ func (d *Device) ConfigureLoraModem() {
 	if d.GetBandwidth() == 125000 && (d.GetSpreadingFactor() == 11 || d.GetSpreadingFactor() == 12) {
 		d.SetLowDataRateOptimOn(true)
 	}
-	// Set Lora Sync
-	d.SetSyncWord(0x34)
+
 	// Configure Output Power
 	d.WriteRegister(REG_PA_RAMP, (d.ReadRegister(REG_PA_RAMP)&0xF0)|0x08) // set PA ramp-up time 50 uSec
 	d.WriteRegister(REG_PA_CONFIG, 0xFF)                                  //PA_BOOST MAX
@@ -137,43 +324,6 @@ func (d *Device) ConfigureLoraModem() {
 	d.WriteRegister(REG_FIFO_RX_BASE_ADDR, 0)
 }
 
-// TxLora sends a packet in Lora mode
-func (d *Device) TxLora(payload []byte) {
-
-	// Are we already in Lora mode ?
-	r := d.ReadRegister(REG_OP_MODE)
-	if (r & OPMODE_LORA) != OPMODE_LORA {
-		println("FATAL: module is not in LORA MODE")
-		return
-	}
-	// Switch to standby mode
-	d.SetOpMode(OPMODE_STANDBY)
-
-	//Switch DIO0 to TxDone
-	d.WriteRegister(REG_DIO_MAPPING_1, 0x40)
-	// Clear all radio IRQ Flags
-	d.WriteRegister(REG_IRQ_FLAGS, 0xff)
-	// Mask all but TxDone
-	d.WriteRegister(REG_IRQ_FLAGS, ^IRQ_TX_DONE_MASK)
-
-	// initialize the payload size and address pointers
-	d.WriteRegister(REG_FIFO_TX_BASE_ADDR, 0)
-	d.WriteRegister(REG_FIFO_ADDR_PTR, 0)
-	d.WriteRegister(REG_PAYLOAD_LENGTH, uint8(len(payload)))
-
-	// Copy payload to FIFO
-	for i := 0; i < len(payload); i++ {
-		d.WriteRegister(REG_FIFO, payload[i])
-	}
-	// Enable TX
-	d.SetOpMode(OPMODE_TX)
-}
-
-// GetRxPktChannel return the Go channel for Rx Packets
-func (d *Device) GetRxPktChannel() chan []byte {
-	return d.rxPktChan
-}
-
 //GetVersion returns hardware version of sx1276 chipset
 func (d *Device) GetVersion() uint8 {
 	return (d.ReadRegister(REG_VERSION))
@@ -182,52 +332,6 @@ func (d *Device) GetVersion() uint8 {
 // IsTransmitting tests if a packet transmission is in progress
 func (d *Device) IsTransmitting() bool {
 	return (d.ReadRegister(REG_OP_MODE) & OPMODE_TX) == OPMODE_TX
-}
-
-func (d *Device) DioIntHandler() {
-
-	// Read the interrupt register
-	irqFlags := d.ReadRegister(REG_IRQ_FLAGS)
-
-	// We have a packet
-	if (irqFlags & IRQ_RX_DONE_MASK) > 0 {
-		println("Handler: RX_DONE")
-		d.rxPktBuf = d.rxPktBuf[:0] // Clear slice
-
-		packetLength := d.ReadRegister(REG_RX_NB_BYTES)
-
-		// Reset the fifo read ptr to the beginning of the packet
-		d.WriteRegister(REG_FIFO_ADDR_PTR, d.ReadRegister(REG_FIFO_RX_CURRENT_ADDR))
-
-		for i := uint8(0); i < packetLength; i++ {
-			d.rxPktBuf = append(d.rxPktBuf, d.ReadRegister(REG_FIFO))
-		}
-		if d.rxPktChan != nil {
-			if d.rxPktBuf != nil {
-				d.rxPktChan <- d.rxPktBuf
-			} else {
-				println("pkt is null")
-			}
-		} else {
-			println("chan is nil")
-		}
-
-	} else if (irqFlags & IRQ_TX_DONE_MASK) > 0 {
-		println("Handler: TX_DONE")
-	} else if (irqFlags & IRQ_RX_TMOUT_MASK) > 0 {
-		println("Handler: RX_TMOUT")
-	} else {
-		println("Handler: irqflags:", irqFlags)
-	}
-
-	// clear IRQ's
-	d.WriteRegister(REG_IRQ_FLAGS, irqFlags)
-
-	// Sigh: on some processors, for some unknown reason, doing this only once does not actually
-	// clear the radio's interrupt flag. So we do it twice. Why?
-	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
-	// d.WriteRegister(REG_IRQ_FLAGS, 0xff) // Clear all IRQ flags
-
 }
 
 // ReadPacket reads a received packet into a byte array
@@ -261,29 +365,6 @@ func (d *Device) LastPacketSNR() uint8 {
 	return uint8(d.ReadRegister(REG_PKT_SNR_VALUE) / 4)
 }
 
-// LastPacketFrequencyError gives the frequency error of the last packet received
-// You can use this to adjust this transeiver frequency to more closly match the
-// frequency being used by the sender, as this can drift over time
-func (d *Device) LastPacketFrequencyError() int32 {
-	// TODO
-	// int32_t freqError = 0;
-	// freqError = static_cast<int32_t>(ReadRegister(REG_FREQ_ERROR_MSB) & B111);
-	// freqError <<= 8L;
-	// freqError += static_cast<int32_t>(ReadRegister(REG_FREQ_ERROR_MID));
-	// freqError <<= 8L;
-	// freqError += static_cast<int32_t>(ReadRegister(REG_FREQ_ERROR_LSB));
-	//
-	// if (ReadRegister(REG_FREQ_ERROR_MSB) & B1000) { // Sign bit is on
-	//    freqError -= 524288; // B1000'0000'0000'0000'0000
-	// }
-	//
-	// const float fXtal = 32E6; // FXOSC: crystal oscillator (XTAL) frequency (2.5. Chip Specification, p. 14)
-	// const float fError = ((static_cast<float>(freqError) * (1L << 24)) / fXtal) * (getSignalBandwidth() / 500000.0f); // p. 37
-	//
-	// return static_cast<long>(fError);
-	return 0
-}
-
 func (d *Device) uint8ToString(v uint8) string {
 
 	c1 := "00"
@@ -292,74 +373,11 @@ func (d *Device) uint8ToString(v uint8) string {
 
 // PrintRegisters outputs the sx127x transceiver registers
 func (d *Device) PrintRegisters(compact bool) {
-	for i := 0; i < 128; i++ {
-		if compact {
-			if (i % 0x10) == 0 {
-				println("\n")
-			}
-			print(d.uint8ToString(uint8(i)), ":", d.uint8ToString(d.ReadRegister(uint8(i))))
-
-		} else {
-			println(d.uint8ToString(uint8(i)), ":", d.uint8ToString(d.ReadRegister(uint8(i))))
-		}
+	for i := uint8(0); i < 128; i++ {
+		v := d.ReadRegister(i)
+		print(v, " ")
 	}
 	println()
-}
-
-// Reset the sx127x device
-func (d *Device) Reset() {
-	d.rstPin.Low()
-	time.Sleep(10 * time.Millisecond)
-	d.rstPin.High()
-	time.Sleep(10 * time.Millisecond)
-}
-
-// SetOpMode changes sx127x modes (RX/TX/IDLE...), but not LORA/FSK
-func (d *Device) SetOpMode(mode uint8) {
-	r := d.ReadRegister(REG_OP_MODE)
-	d.WriteRegister(REG_OP_MODE, (r&^OPMODE_MASK)|mode)
-}
-
-// OpModeLora switch radio to Lora mode
-func (d *Device) OpModeLora() {
-	r := OPMODE_LORA
-	//	r |= 0x8 // High frequency
-	d.WriteRegister(REG_OP_MODE, r)
-}
-
-// OpModeFSK switch radio to FSK mode
-func (d *Device) OpModeFSK() {
-	r := uint8(0)
-	//	r |= 0x8 // High frequency
-	d.WriteRegister(REG_OP_MODE, r)
-}
-
-// Set Mode Receive Continuous
-func (d *Device) ReceiveContinuous() {
-	d.SetOpMode(OPMODE_LORA | OPMODE_RX)
-	d.WriteRegister(REG_DIO_MAPPING_1, 0) // int on rxdone
-}
-
-// Set Mode Receive Single
-func (d *Device) ReceiveSingle() {
-	//Switch DIO0 to RxDone
-	d.WriteRegister(REG_DIO_MAPPING_1, 0x00)
-	// Clear all radio IRQ Flags
-	d.WriteRegister(REG_IRQ_FLAGS, 0xff)
-	// Mask all but TxDone
-	d.WriteRegister(REG_IRQ_FLAGS, ^(IRQ_RX_DONE_MASK | IRQ_RX_TMOUT_MASK))
-	// Rx Mode
-	d.SetOpMode(OPMODE_LORA | OPMODE_RX_SINGLE)
-}
-
-// Standby puts the sx127x device into lora + standby mode
-func (d *Device) LoraStandby() {
-	d.SetOpMode(OPMODE_LORA | OPMODE_STANDBY)
-}
-
-// Sleep puts the sx127x device into sleep mode
-func (d *Device) LoraSleep() {
-	d.SetOpMode(OPMODE_LORA | OPMODE_SLEEP)
 }
 
 // GetFrequency returns the frequency the LoRa module is using
@@ -372,7 +390,7 @@ func (d *Device) GetFrequency() uint32 {
 }
 
 // SetFrequency updates the frequency the LoRa module is using
-func (d *Device) ConfigureChannel(frequency uint32) {
+func (d *Device) SetFrequency(frequency uint32) {
 	var frf = (uint64(frequency) << 19) / 32000000
 	d.WriteRegister(REG_FRF_MSB, uint8(frf>>16))
 	d.WriteRegister(REG_FRF_MID, uint8(frf>>8))
@@ -455,7 +473,7 @@ func (d *Device) GoReceive() {
 	d.WriteRegister(REG_DIO_MAPPING_1, 0) //Change DIO0 back to RxDone, DIO1 RxTmeout
 	d.WriteRegister(0x33, 0x67)           // Set IQ
 	d.WriteRegister(0x3B, 0x19)           // Set IQ
-	d.SetOpMode(OPMODE_LORA | OPMODE_RX)  // Single RX Mode
+	d.OpMode(OPMODE_LORA | OPMODE_RX)     // RX Mode
 }
 
 /*
@@ -653,26 +671,16 @@ func (d *Device) SetLowDataRateOptimOn(val bool) {
 	}
 }
 
-// -------------------
-// Read/Write SPI Regs
-// -------------------
-
-// ReadRegister returns register value
-func (d *Device) ReadRegister(reg uint8) uint8 {
-	d.csPin.Low()
-	d.spi.Tx([]byte{reg & 0x7f}, nil)
-	var value [1]byte
-	d.spi.Tx(nil, value[:])
-	d.csPin.High()
-	return value[0]
+// SetLowFrequencyModeOn enables Low Data Rate Optimization
+func (d *Device) SetLowFrequencyModeOn(val bool) {
+	if val {
+		d.WriteRegister(REG_OP_MODE, d.ReadRegister(REG_OP_MODE)|0x04)
+	} else {
+		d.WriteRegister(REG_OP_MODE, d.ReadRegister(REG_OP_MODE)&0xfb)
+	}
 }
 
-// WriteRegister sets a value to register
-func (d *Device) WriteRegister(reg uint8, value uint8) uint8 {
-	var response [1]byte
-	d.csPin.Low()
-	d.spi.Tx([]byte{reg | 0x80}, nil)
-	d.spi.Tx([]byte{value}, response[:])
-	d.csPin.High()
-	return response[0]
+// SetHopPeriod sets number of symbol periods between frequency hops. (0 = disabled).
+func (d *Device) SetHopPeriod(val uint8) {
+	d.WriteRegister(REG_HOP_PERIOD, val)
 }

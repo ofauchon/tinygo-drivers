@@ -15,8 +15,8 @@ const (
 	REG_FIFO_TX_BASE_ADDR    = 0x0e
 	REG_FIFO_RX_BASE_ADDR    = 0x0f
 	REG_FIFO_RX_CURRENT_ADDR = 0x10
-	REG_IRQ_FLAGS            = 0x12
 	REG_IRQ_FLAGS_MASK       = 0x11
+	REG_IRQ_FLAGS            = 0x12
 	REG_RX_NB_BYTES          = 0x13
 	REG_PKT_SNR_VALUE        = 0x19
 	REG_PKT_RSSI_VALUE       = 0x1a
@@ -27,6 +27,8 @@ const (
 	REG_PREAMBLE_MSB         = 0x20
 	REG_PREAMBLE_LSB         = 0x21
 	REG_PAYLOAD_LENGTH       = 0x22
+	REG_MAX_PAYLOAD_LENGTH   = 0x23
+	REG_HOP_PERIOD           = 0x24
 	REG_MODEM_CONFIG_3       = 0x26
 	REG_FREQ_ERROR_MSB       = 0x28
 	REG_FREQ_ERROR_MID       = 0x29
@@ -38,6 +40,7 @@ const (
 	REG_SYNC_WORD            = 0x39
 	REG_INVERTIQ2            = 0x3b
 	REG_DIO_MAPPING_1        = 0x40
+	REG_DIO_MAPPING_2        = 0x41
 	REG_VERSION              = 0x42
 	REG_PA_DAC               = 0x4d
 
@@ -56,11 +59,27 @@ const (
 	// PA config
 	PA_BOOST = 0x80
 
-	// IRQ masks
-	IRQ_TX_DONE_MASK           = uint8(0x08)
-	IRQ_PAYLOAD_CRC_ERROR_MASK = uint8(0x20)
-	IRQ_RX_DONE_MASK           = uint8(0x40)
-	IRQ_RX_TMOUT_MASK          = uint8(0x64)
+	// Bits masking the corresponding IRQs from the radio
+	IRQ_LORA_RXTOUT_MASK = uint8(0x80)
+	IRQ_LORA_RXDONE_MASK = uint8(0x40)
+	IRQ_LORA_CRCERR_MASK = uint8(0x20)
+	IRQ_LORA_HEADER_MASK = uint8(0x10)
+	IRQ_LORA_TXDONE_MASK = uint8(0x08)
+	IRQ_LORA_CDDONE_MASK = uint8(0x04)
+	IRQ_LORA_FHSSCH_MASK = uint8(0x02)
+	IRQ_LORA_CDDETD_MASK = uint8(0x01)
 
-	MAX_PKT_LENGTH = uint8(255)
+	// DIO function mappings                D0D1D2D3
+	MAP_DIO0_LORA_RXDONE = uint8(0x00) // 00------
+	MAP_DIO0_LORA_TXDONE = uint8(0x40) // 01------
+	MAP_DIO1_LORA_RXTOUT = uint8(0x00) // --00----
+	MAP_DIO1_LORA_NOP    = uint8(0x30) // --11----
+	MAP_DIO2_LORA_NOP    = uint8(0xC0) // ----11--
+
+	PAYLOAD_LENGTH = uint8(0x40)
+
+	// Low Noise Amp
+	LNA_MAX_GAIN = uint8(0x23)
+	LNA_OFF_GAIN = uint8(0x00)
+	LNA_LOW_GAIN = uint8(0x20)
 )
