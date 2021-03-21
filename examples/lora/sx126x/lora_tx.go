@@ -172,6 +172,8 @@ func main() {
 		time.Sleep(time.Millisecond * 250)
 		led.Low()
 
+		stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
+
 		lora.Sleep()
 		lora.Standby()
 

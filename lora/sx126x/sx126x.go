@@ -44,9 +44,8 @@ func New(spi machine.SPI) Device {
 
 // GetStatus returns radio status
 func (d *Device) GetStatus() uint8 {
-	//  SPIreadCommand(SX126X_CMD_GET_STATUS, &data, 1);
 	r := d.ExecGetCommand(SX126X_CMD_GET_STATUS, 1)
-	return r[1]
+	return r[0]
 }
 
 // SetTx enable Tx Mode with Tx Timeout
@@ -60,12 +59,12 @@ func (d *Device) SetTx(t uint32) {
 
 // Sleep switch device to sleep mode
 func (d *Device) Sleep() {
-	d.ExecSetCommand(SX126X_CMD_SET_SLEEP, []uint8{0})
+	d.ExecSetCommand(SX126X_CMD_SET_SLEEP, []uint8{SX126X_SLEEP_START_WARM | SX126X_SLEEP_RTC_OFF})
 }
 
-// Sleep switch device to standby mode
+// Standby switch device to RC standby mode
 func (d *Device) Standby() {
-	d.ExecSetCommand(SX126X_CMD_SET_STANDBY, []uint8{0})
+	d.ExecSetCommand(SX126X_CMD_SET_STANDBY, []uint8{SX126X_STANDBY_RC})
 }
 
 // SetRfFrequency sets the radio frequency
