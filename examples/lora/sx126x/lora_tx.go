@@ -146,10 +146,10 @@ func SetRfFrequency(f uint32) {
 //----------------------------------------------
 //----------------------------------------------
 
-func xstatus() {
-	dat := SpiExecGetCommand(RADIO_GET_STATUS, 1)
-	cmdstatus := (dat[0] & (0x7 << 4)) >> 4
-	chipmode := (dat[0] & (0x7 << 1)) >> 1
+func xstatus(lora sx126x.Device) {
+	dat := lora.GetStatus()
+	cmdstatus := (dat & (0x7 << 4)) >> 4
+	chipmode := (dat & (0x7 << 1)) >> 1
 	println("cmdstatus:", cmdstatus, " chipmode:", chipmode)
 }
 
@@ -163,7 +163,7 @@ func main() {
 	print("STM32WL Radio Init Example\n")
 
 	// Prepare Lora
-	loraRadio := sx126x.New(machine.SPI0, stm32.PWR_SUBGHZSPICR_NSS, nil)
+	lora := sx126x.New(machine.SPI0)
 
 	initRadio()
 
@@ -172,14 +172,14 @@ func main() {
 		time.Sleep(time.Millisecond * 250)
 		led.Low()
 
-		SpiExecSetCommand(RADIO_SET_SLEEP, []uint8{0})
-		SpiExecSetCommand(RADIO_SET_STANDBY, []uint8{0})
+		lora.Sleep()
+		lora.Standby()
 
-		xstatus()
+		xstatus(lora)
 
-		SpiExecSetCommand(RADIO_SET_TX, []uint8{0, 0, 0}) // 000 for no timeout
+		lora.SetTx(0)
 
-		xstatus()
+		xstatus(lora)
 
 		time.Sleep(time.Millisecond * 1000)
 
