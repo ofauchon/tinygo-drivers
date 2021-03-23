@@ -1,7 +1,7 @@
 package main
 
 // This is the most minimal blinky example and should run almost everywhere.
-
+//
 import (
 	"device/stm32"
 	"machine"
@@ -10,6 +10,7 @@ import (
 	"tinygo.org/x/drivers/lora/sx126x"
 )
 
+/*
 const (
 	//GET
 	RADIO_GET_STATUS         = uint8(0xC0)
@@ -27,7 +28,7 @@ const (
 	RADIO_SET_STANDBY      = uint8(0x80)
 	RADIO_SET_PACKETTYPE   = uint8(0x8A)
 )
-
+*/
 // initRadio prepares SubGhz radio for operation
 // RM0461 4.9
 func initRadio() {
@@ -39,6 +40,7 @@ func initRadio() {
 
 	// Reset SUBGHZ device
 	stm32.RCC.CSR.SetBits(stm32.RCC_CSR_RFRST)
+	time.Sleep(time.Millisecond * 10)
 	stm32.RCC.CSR.ClearBits(stm32.RCC_CSR_RFRST)
 	for stm32.RCC.CSR.HasBits(stm32.RCC_CSR_RFRSTF) {
 	}
@@ -60,100 +62,66 @@ func initRadio() {
 	stm32.SPI3.CR1.Set(stm32.SPI_CR1_MSTR | stm32.SPI_CR1_SSI | (0b10 << 3) | stm32.SPI_CR1_SSM) // Software Slave Management (NSS)
 	stm32.SPI3.CR2.Set(stm32.SPI_CR2_FRXTH | (0b111 << 8))                                       // FIFO Threshold and 8bit size
 	stm32.SPI3.CR1.SetBits(stm32.SPI_CR1_SPE)                                                    // Enable SPI
-
-	println("RCC_APB3ENR=", stm32.RCC.APB3ENR.Get())
-	println("RCC_CSR=", stm32.RCC.CSR.Get())
-	println("PWR.SUBGHZSPICR=", stm32.PWR.SUBGHZSPICR.Get())
-	println("EXTI.IMR2=", stm32.EXTI.IMR2.Get())
-	println("PWR.CR3=", stm32.PWR.CR3.Get())
-	println("PWR.SCR=", stm32.PWR.SCR.Get())
-	println("SPI3.CR1=", stm32.SPI3.CR1.Get())
-	println("SPI3.CR2=", stm32.SPI3.CR2.Get())
-
 }
-
-func SpiRx() uint8 {
-	// Wait until Tx Buffer empty
-	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_TXE) {
-	}
-	// Write Fake data to initiate a read
-	stm32.SPI3.DR.Set(0xFF)
-	// Wait for Rx Data
-	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_RXNE) {
-	}
-	// Reat packet
-	return uint8(stm32.SPI3.DR.Get() & 0xFF)
-
-}
-
-//SpiTx Transmit byte over SPI
-func SpiTx(cmd uint8) {
-	// Wait until Tx Buffer empty
-	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_TXE) {
-	}
-	// Write to data register
-	stm32.SPI3.DR.Set(uint32(cmd))
-	// Wait for Rx Data
-	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_RXNE) {
-	}
-	// Flush RX data
-	stm32.SPI3.DR.Get()
-}
-
-// SpiExecCommand send a command to configure the peripheral
-func SpiExecSetCommand(cmd uint8, buf []uint8) {
-	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS) // Select Slave
-	SpiTx(cmd)                                                 // Send command
-	for i := 0; i < len(buf); i++ {
-		SpiTx(buf[i]) // Send options
-	}
-	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS) // Disable Slave
-}
-
-// SpiExecCommand send a command to configure the peripheral
-func SpiExecGetCommand(cmd uint8, size int) []uint8 {
-	var buf []uint8
-	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS) // Select Slave
-	SpiTx(cmd)                                                 // Send command
-	SpiTx(0x00)                                                // Flush the status (1st byte)
-	for i := 0; i < size; i++ {
-		buf = append(buf, SpiRx()) // Read bytes
-	}
-	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS) // Disable Slave
-	return buf
-}
-
-//----------------------------------------------
-//----------------------------------------------
-
-func SetModulationParams(sf, bw, cr, ldro uint8) {
-	var p [4]uint8
-	p[0] = sf
-	p[1] = bw
-	p[2] = cr
-	p[3] = ldro
-}
-
-func SetRfFrequency(f uint32) {
-	var p [4]uint8
-	p[0] = uint8((f >> 24) & 0xFF)
-	p[1] = uint8((f >> 16) & 0xFF)
-	p[2] = uint8((f >> 8) & 0xFF)
-	p[3] = uint8((f >> 0) & 0xFF)
-	SpiExecSetCommand(RADIO_SET_FR_FREQUENCY, p[:])
-}
-
-//----------------------------------------------
-//----------------------------------------------
 
 func xstatus(lora sx126x.Device) {
+	println("* Get status")
 	dat := lora.GetStatus()
 	cmdstatus := (dat & (0x7 << 4)) >> 4
 	chipmode := (dat & (0x7 << 1)) >> 1
 	println("cmdstatus:", cmdstatus, " chipmode:", chipmode)
 }
 
+// DS.SX1261-2.W.APP section 14.2 p99
+func startTransmit(lora sx126x.Device) {
+
+	// Standby mode for configuration
+	lora.Standby()
+
+	// Define the protocol
+	lora.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
+
+	// Define the RF Frequency
+	lora.SetRfFrequency(868000000)
+
+	// Set Power Amplifier
+	lora.SetPaConfig(0x04, 0x07, 0x00, 0x01)
+
+	// Set output power and ramping time (0x16:HP22Db)
+	lora.SetTxConfig(0x16, sx126x.SX126X_PA_RAMP_200U) // CHECKME
+
+	// Were to store the payload in buffer
+	lora.SetBufferBaseAddress(0, 0)
+
+	// write the payload
+	lora.WriteBuffer([]byte("Hello TinyGo!"))
+
+	// Set modulation params
+	// TODO SetModulationParams
+
+	// Define frame format
+	// TODO SetPacketParams
+
+	// Configure DIO / IRQ
+	// TODO
+
+	// Set Sync Word
+	// TODO
+
+	// Start transmission
+	lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
+
+	// Wait IRQ TxDone or Timeout
+	// TODO
+
+	// Clear Interrupt Flag
+	lora.ClearIrqStatus(sx126x.SX126X_IRQ_TX_DONE)
+
+}
+
 func main() {
+
+	iter := uint16(0)
 	led := machine.LED
 	led.Configure(machine.PinConfig{Mode: machine.PinOutput})
 
@@ -166,24 +134,25 @@ func main() {
 	lora := sx126x.New(machine.SPI0)
 
 	initRadio()
+	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
+
+	println("* Go to sleep")
+	lora.Sleep()
+	println("* Go to standby")
+	lora.Standby()
 
 	for {
+		println("I:", iter)
+		iter++
 		led.High()
-		time.Sleep(time.Millisecond * 250)
+		time.Sleep(time.Millisecond * 2000)
 		led.Low()
 
-		stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
-
-		lora.Sleep()
-		lora.Standby()
+		//xstatus(lora)
 
 		xstatus(lora)
 
-		lora.SetTx(0)
-
-		xstatus(lora)
-
-		time.Sleep(time.Millisecond * 1000)
+		println("* Go to TX")
 
 	}
 }
