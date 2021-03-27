@@ -134,6 +134,7 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 func (d *Device) SetRfFrequency(frequency uint32) {
 	var p [4]uint8
 	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE)) // Convert to PLL Steps
+	println("SetRfFreq:", freq)
 	p[0] = uint8((freq >> 24) & 0xFF)
 	p[1] = uint8((freq >> 16) & 0xFF)
 	p[2] = uint8((freq >> 8) & 0xFF)

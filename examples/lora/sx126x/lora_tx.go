@@ -10,27 +10,6 @@ import (
 	"tinygo.org/x/drivers/lora/sx126x"
 )
 
-/*
-const (
-	//GET
-	RADIO_GET_STATUS         = uint8(0xC0)
-	RADIO_GET_PACKETTYPE     = uint8(0x11)
-	RADIO_GET_RXBUFFERSTATUS = uint8(0x13)
-	RADIO_GET_PACKETSTATUS   = uint8(0x14)
-	RADIO_GET_RSSIINST       = uint8(0x15)
-	RADIO_GET_STATS          = uint8(0x10)
-	RADIO_GET_IRQSTATUS      = uint8(0x12)
-	RADIO_GET_ERROR          = uint8(0x17)
-	// SET
-	RADIO_SET_FR_FREQUENCY = uint8(0x86)
-	RADIO_SET_SLEEP        = uint8(0x84)
-	RADIO_SET_TX           = uint8(0x83)
-	RADIO_SET_STANDBY      = uint8(0x80)
-	RADIO_SET_PACKETTYPE   = uint8(0x8A)
-)
-*/
-// initRadio prepares SubGhz radio for operation
-// RM0461 4.9
 func SubGhzInit() error {
 
 	// TODO : VOS
@@ -85,9 +64,8 @@ func xstatus(lora sx126x.Device) {
 }
 
 // DS.SX1261-2.W.APP section 14.2 p99
-func configure(lora sx126x.Device) {
+func configureLora(lora sx126x.Device) {
 
-	msg := []byte("Hello TinyGo!")
 	// Standby mode for configuration
 	lora.Standby()
 
@@ -98,10 +76,6 @@ func configure(lora sx126x.Device) {
 	println("SetPacketType")
 	// Define the protocol
 	lora.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
-
-	println("SetRfFrequency")
-	// Define the RF Frequency
-	lora.SetRfFrequency(868000000)
 
 	println("SetPaConfig")
 	// Set Power Amplifier
@@ -115,19 +89,10 @@ func configure(lora sx126x.Device) {
 	// Were to store the payload in buffer
 	lora.SetBufferBaseAddress(0, 0)
 
-	println("WriteBuffer")
-	// write the payload
-	lora.WriteBuffer(msg)
-
 	println("SetModulation")
 	// Set modulation params
 	// SF7 / 125 KHz / CR 4/7 / No Optimis
 	lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
-
-	println("SetPacketParam")
-	// Define frame format
-	//10 preamble bits, 8bits preamble detection,
-	lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_INVERTED)
 
 	// Configure DIO / IRQ
 	// TODO
@@ -156,10 +121,11 @@ func configure(lora sx126x.Device) {
 
 func main() {
 
+	// Configure LED GPIO
 	led := machine.LED
 	led.Configure(machine.PinConfig{Mode: machine.PinOutput})
 
-	// UART0 (Console)
+	// Configure UART0 (Console)
 	machine.UART0.Configure(machine.UARTConfig{TX: machine.UART_TX_PIN, RX: machine.UART_TX_PIN, BaudRate: 9600})
 
 	println("STM32WL Radio Init Example")
@@ -167,27 +133,40 @@ func main() {
 	// Init radio module
 	SubGhzInit()
 
-	// Attach driver
+	// Attach SPI driver
 	lora := sx126x.New(machine.SPI0)
 
-	// Switch to Sleep, then Standby
+	// Switch Radio to Sleep, then Standby
 	lora.Sleep()
 	lora.Standby()
 	println("* Now in Standby")
-
-	/*
-		lora.SetPacketType(0x01)
-		println("2")
-		a := lora.GetPacketType()
-		println("Read Packet Type: ", a)
-	*/
 	xstatus(lora)
 
-	println("SET TX MODE: ")
-	lora.SetTx(0)
+	// Sets Lora configuration
+	configureLora(lora)
 
-	xstatus(lora)
+	msg := []byte("Hello TinyGo!")
 
-	//startTransmit(lora)
+	for {
+
+		// write the payload
+		println("WriteBuffer")
+		lora.WriteBuffer(msg)
+
+		// Define frame format
+		//10 preamble bits, 8bits preamble detection,
+		println("SetPacketParam")
+		lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_INVERTED)
+		println("SetRfFrequency")
+		// Define the RF Frequency
+		lora.SetRfFrequency(868000)
+		//lora.SetRfFrequency(433000000)
+
+		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
+
+		xstatus(lora)
+		time.Sleep(1000 * time.Millisecond)
+		xstatus(lora)
+	}
 
 }
