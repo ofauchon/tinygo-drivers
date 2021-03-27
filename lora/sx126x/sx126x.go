@@ -4,7 +4,9 @@ package sx126x
 
 import (
 	"device/stm32"
+	"errors"
 	"machine"
+	"time"
 )
 
 // RadioEvent are send to application through a channel
@@ -49,6 +51,12 @@ func (d *Device) GetStatus() uint8 {
 	return r[0]
 }
 
+// GetPackeType returns radio status
+func (d *Device) GetPacketType() uint8 {
+	r := d.ExecGetCommand(SX126X_CMD_GET_PACKET_TYPE, 1)
+	return r[0]
+}
+
 // GetIrqStatus returns radio status
 func (d *Device) GetIrqStatus() uint16 {
 	r := d.ExecGetCommand(SX126X_CMD_GET_STATUS, 3)
@@ -56,7 +64,7 @@ func (d *Device) GetIrqStatus() uint16 {
 	return ret
 }
 
-// SetTx enable Tx Mode with Tx Timeout
+// SetTx enable Tx Mode with Tx Timeout (R)
 func (d *Device) SetTx(t uint32) {
 	var p [3]uint8
 	p[0] = uint8((t >> 16) & 0xFF)
@@ -65,12 +73,22 @@ func (d *Device) SetTx(t uint32) {
 	d.ExecSetCommand(SX126X_CMD_SET_TX, p[:])
 }
 
+// SetRx enable Rx Mode with Rx Timeout (R)
+func (d *Device) SetRx(t uint32) {
+	var p [3]uint8
+	p[0] = uint8((t >> 16) & 0xFF)
+	p[1] = uint8((t >> 8) & 0xFF)
+	p[2] = uint8((t >> 0) & 0xFF)
+	d.ExecSetCommand(SX126X_CMD_SET_RX, p[:])
+}
+
 // Sleep switch device to sleep mode
 func (d *Device) Sleep() {
+	// Todo : Ant switch ? Warm start ?
 	d.ExecSetCommand(SX126X_CMD_SET_SLEEP, []uint8{SX126X_SLEEP_START_WARM | SX126X_SLEEP_RTC_OFF})
 }
 
-// Standby switch device to RC standby mode
+// Standby switch device to RC standby mode (R)
 func (d *Device) Standby() {
 	d.ExecSetCommand(SX126X_CMD_SET_STANDBY, []uint8{SX126X_STANDBY_RC})
 }
@@ -82,7 +100,17 @@ func (d *Device) SetPacketType(packetType uint8) {
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_TYPE, p[:])
 }
 
-// SetPacketParam sets various packet-related params
+// SetSyncWord defines the Sync Word to yse
+/*
+func (d *Device) SetSyncWord(syncword uint8) {
+	var p [2]uint8
+	p[1] = uint8((syncword >> 8) & 0xFF)
+	p[2] = uint8(syncword & 0xFF)
+	d.WriteRegister(SX126X_REG_LORA_SYNC_WORD_MSB, p[:])
+}
+*/
+
+// SetPacketParam sets various packet-related params (R)
 func (d *Device) SetPacketParam(preambleLength uint16, crcType, payloadLength, headerType, invertIQ uint8) {
 	var p [6]uint8
 	p[0] = uint8((preambleLength >> 8) & 0xFF)
@@ -102,10 +130,10 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
 }
 
-// SetRfFrequency sets the radio frequency
+// SetRfFrequency sets the radio frequency (R)
 func (d *Device) SetRfFrequency(frequency uint32) {
 	var p [4]uint8
-	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE))
+	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE)) // Convert to PLL Steps
 	p[0] = uint8((freq >> 24) & 0xFF)
 	p[1] = uint8((freq >> 16) & 0xFF)
 	p[2] = uint8((freq >> 8) & 0xFF)
@@ -113,7 +141,7 @@ func (d *Device) SetRfFrequency(frequency uint32) {
 	d.ExecSetCommand(SX126X_CMD_SET_RF_FREQUENCY, p[:])
 }
 
-// SetPaConfig sets the Power Amplifier configuration
+// SetPaConfig sets the Power Amplifier configuration (R)
 func (d *Device) SetPaConfig(paDutyCycle, hpMax, deviceSel, paLut uint8) {
 	var p [4]uint8
 	p[0] = paDutyCycle
@@ -123,15 +151,15 @@ func (d *Device) SetPaConfig(paDutyCycle, hpMax, deviceSel, paLut uint8) {
 	d.ExecSetCommand(SX126X_CMD_SET_PA_CONFIG, p[:])
 }
 
-// SetTxConfig sets power and rampup time
-func (d *Device) SetTxConfig(power, rampTime uint8) {
+// SetTxConfig sets power and rampup time (R)
+func (d *Device) SetTxParams(power, rampTime uint8) {
 	var p [2]uint8
 	p[0] = power
 	p[1] = rampTime
 	d.ExecSetCommand(SX126X_CMD_SET_TX_PARAMS, p[:])
 }
 
-// SetModulationParams sets the Lora modulation frequency
+// SetModulationParams sets the Lora modulation frequency (R)
 func (d *Device) SetModulationParams(spreadingFactor, bandwidth, codingRate, lowDataRateOptimize uint8) {
 	var p [4]uint8
 	p[0] = spreadingFactor
@@ -149,6 +177,9 @@ func (d *Device) ClearIrqStatus(clearIrqParams uint16) {
 	d.ExecSetCommand(SX126X_CMD_CLEAR_IRQ_STATUS, p[:])
 }
 
+// ***************
+// BUFFERS
+// **************
 // WriteBuffer sets base address for buffer
 func (d *Device) WriteBuffer(data []uint8) {
 	p := []uint8{0} // Zero offset
@@ -172,44 +203,77 @@ func (d *Device) Reset() {
 */
 
 // ReadRegister reads register value
-func (d *Device) ReadRegister(reg uint8) uint8 {
+func (d *Device) ReadRegister(addr, size uint16) []uint8 {
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.Low()
-	d.spi.Tx([]byte{reg & 0x7f}, nil)
-	var value [1]byte
-	d.spi.Tx(nil, value[:])
+
+	buf := []byte{SX126X_CMD_READ_REGISTER, uint8((addr >> 8) & 0xFF), uint8(addr & 0xFF), 0x00} // Sec. 13.2.2
+	d.spi.Tx(buf, nil)
+
+	ret := make([]uint8, size)
+	for i := uint16(0); i < size; i++ {
+		d.spi.Tx([]uint8{0x00}, ret)
+	}
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.High()
-	return value[0]
+	d.WaitBusy()
+	return ret
+}
+
+// WaitBusy sleep until all busy flags clears
+func (d *Device) CheckDeviceReady() error {
+	// Wakeup radio in case of sleep mode: Select-Unselect radio
+	// In case of Deep Seep ????
+	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
+	time.Sleep(time.Millisecond)
+	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
+	return d.WaitBusy()
+}
+
+// WaitBusy sleep until all busy flags clears
+func (d *Device) WaitBusy() error {
+	count := 10000
+	// RM0461 Sec 5.3 Radio Busy Management
+	for count > 0 {
+		fl1 := stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYMS)
+		fl2 := stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYS)
+		if !fl1 && !fl2 {
+			return nil
+		}
+		count--
+	}
+	return errors.New("WaitBusy Timeout")
 }
 
 // WriteRegister writes value to register
 func (d *Device) WriteRegister(reg uint8, value uint8) uint8 {
 	var response [1]byte
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.Low()
+
 	d.spi.Tx([]byte{reg | 0x80}, nil)
 	d.spi.Tx([]byte{value}, response[:])
+
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.High()
+	d.WaitBusy()
 	return response[0]
 }
 
 // ExecSetCommand send a command to configure the peripheral
 func (d *Device) ExecSetCommand(cmd uint8, buf []uint8) {
+	d.CheckDeviceReady()
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.Low()
 	d.spi.Tx([]byte{cmd}, nil)
 	d.spi.Tx(buf, nil)
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.High()
+	if cmd != SX126X_CMD_SET_SLEEP {
+		d.WaitBusy()
+	}
 }
 
 // ExecGetCommand queries the peripheral the peripheral
 func (d *Device) ExecGetCommand(cmd uint8, size int) []uint8 {
 	var buf []uint8
+	d.CheckDeviceReady()
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
-	//	d.csPin.Low()
+
 	d.spi.Tx([]byte{cmd}, nil)
 	d.spi.Tx([]byte{0x00}, nil) // Drop first status byte
 	var value [1]byte
@@ -217,7 +281,8 @@ func (d *Device) ExecGetCommand(cmd uint8, size int) []uint8 {
 		d.spi.Tx(nil, value[:])
 		buf = append(buf, value[0]) // Read bytes
 	}
-	//d.csPin.High()
+
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
+	d.WaitBusy()
 	return buf
 }
