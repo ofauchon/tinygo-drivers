@@ -94,8 +94,8 @@ func configureLora(lora sx126x.Device) {
 	// SF7 / 125 KHz / CR 4/7 / No Optimis
 	lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
 
-	// Configure DIO / IRQ
-	// TODO
+	// Set Lora Sync Word
+	lora.SetLoraPublicNetwork(true)
 
 	// Set Sync Word (0x34?)
 	// TODO
@@ -145,7 +145,16 @@ func main() {
 	// Sets Lora configuration
 	configureLora(lora)
 
-	msg := []byte("Hello TinyGo!")
+	//msg := []byte("Hello TinyGo!")
+	msg := []byte{0x00, 0xDC, 0x00, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70, 0x1E, 0x6F, 0xED, 0xF5, 0x7C, 0xEE, 0xAF, 0x00, 0x85, 0xCC, 0x58, 0x7F, 0xE9, 0x13}
+
+	// Switch to RX
+	lora.SetRx(sx126x.SX126X_RX_TIMEOUT_NONE)
+	time.Sleep(100 * time.Millisecond)
+
+	println("SetRfFrequency")
+	//Define the RF Frequency (Only when in RX/TX/FS mode )
+	lora.SetRfFrequency(868000000)
 
 	for {
 
@@ -156,11 +165,7 @@ func main() {
 		// Define frame format
 		//10 preamble bits, 8bits preamble detection,
 		println("SetPacketParam")
-		lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_INVERTED)
-
-		//		println("SetRfFrequency")
-		// Define the RF Frequency
-		//lora.SetRfFrequency(868000000)
+		lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
 
 		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
 

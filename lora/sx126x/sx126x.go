@@ -101,14 +101,22 @@ func (d *Device) SetPacketType(packetType uint8) {
 }
 
 // SetSyncWord defines the Sync Word to yse
-/*
-func (d *Device) SetSyncWord(syncword uint8) {
+func (d *Device) SetSyncWord(syncword uint16) {
 	var p [2]uint8
-	p[1] = uint8((syncword >> 8) & 0xFF)
-	p[2] = uint8(syncword & 0xFF)
+	p[0] = uint8((syncword >> 8) & 0xFF)
+	p[1] = uint8((syncword >> 0) & 0xFF)
 	d.WriteRegister(SX126X_REG_LORA_SYNC_WORD_MSB, p[:])
 }
-*/
+
+// SetLoraPublicNetwork sets Sync Word to 0x3444 (Public) or 0x1424 (Private)
+func (d *Device) SetLoraPublicNetwork(enable bool) {
+	if enable {
+		d.SetSyncWord(SX126X_LORA_MAC_PUBLIC_SYNCWORD)
+	} else {
+		d.SetSyncWord(SX126X_LORA_MAC_PRIVATE_SYNCWORD)
+
+	}
+}
 
 // SetPacketParam sets various packet-related params (R)
 func (d *Device) SetPacketParam(preambleLength uint16, crcType, payloadLength, headerType, invertIQ uint8) {
@@ -243,7 +251,7 @@ func (d *Device) ReadRegister(addr, size uint16) []uint8 {
 	return ret
 }
 
-// WaitBusy sleep until all busy flags clears
+// CheckDeviceReady sleep until all busy flags clears
 func (d *Device) CheckDeviceReady() error {
 	// Wakeup radio in case of sleep mode: Select-Unselect radio
 	// In case of Deep Seep ????
@@ -269,16 +277,16 @@ func (d *Device) WaitBusy() error {
 }
 
 // WriteRegister writes value to register
-func (d *Device) WriteRegister(reg uint8, value uint8) uint8 {
-	var response [1]byte
+func (d *Device) WriteRegister(reg uint16, data []uint8) {
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
 
-	d.spi.Tx([]byte{reg | 0x80}, nil)
-	d.spi.Tx([]byte{value}, response[:])
+	buf := []byte{SX126X_CMD_WRITE_REGISTER, uint8((reg >> 8) & 0xFF), uint8(reg & 0xFF)}
+
+	d.spi.Tx(buf, nil)
+	d.spi.Tx(data, nil)
 
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
 	d.WaitBusy()
-	return response[0]
 }
 
 // ExecSetCommand send a command to configure the peripheral

@@ -320,4 +320,7 @@ const (
 	//SX126X_REG_LORA_SYNC_WORD_MSB + LSB
 	SX126X_SYNC_WORD_PUBLIC  = 0x34 // actually 0x3444  NOTE: The low nibbles in each byte (0x_4_4) are masked out since apparently, they're reserved.
 	SX126X_SYNC_WORD_PRIVATE = 0x12 // actually 0x1424        You couldn't make this up if you tried.
+
+	SX126X_LORA_MAC_PUBLIC_SYNCWORD  = 0x3444
+	SX126X_LORA_MAC_PRIVATE_SYNCWORD = 0x1424
 )
