@@ -142,6 +142,30 @@ func (d *Device) SetRfFrequency(frequency uint32) {
 	d.ExecSetCommand(SX126X_CMD_SET_RF_FREQUENCY, p[:])
 }
 
+func (d *Device) CalibrateImage(freq uint32) {
+
+	var calFreq [2]uint8
+
+	if freq > 900000000 {
+		calFreq[0] = 0xE1
+		calFreq[1] = 0xE9
+	} else if freq > 850000000 {
+		calFreq[0] = 0xD7
+		calFreq[1] = 0xD8
+	} else if freq > 770000000 {
+		calFreq[0] = 0xC1
+		calFreq[1] = 0xC5
+	} else if freq > 460000000 {
+		calFreq[0] = 0x75
+		calFreq[1] = 0x81
+	} else if freq > 425000000 {
+		calFreq[0] = 0x6B
+		calFreq[1] = 0x6F
+	}
+	d.ExecSetCommand(SX126X_CMD_CALIBRATE_IMAGE, calFreq[:])
+
+}
+
 // SetPaConfig sets the Power Amplifier configuration (R)
 func (d *Device) SetPaConfig(paDutyCycle, hpMax, deviceSel, paLut uint8) {
 	var p [4]uint8

@@ -60,7 +60,7 @@ func xstatus(lora sx126x.Device) {
 	dat := lora.GetStatus()
 	chipmode := (dat & (0x7 << 4)) >> 4
 	cmdstatus := (dat & (0x7 << 1)) >> 1
-	println("status:", dat, "cmd:", cmdstatus, " mode:", chipmode)
+	println("mode:", chipmode, " cmd:", cmdstatus, " irq:", dat)
 }
 
 // DS.SX1261-2.W.APP section 14.2 p99
@@ -157,10 +157,10 @@ func main() {
 		//10 preamble bits, 8bits preamble detection,
 		println("SetPacketParam")
 		lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_INVERTED)
-		println("SetRfFrequency")
+
+		//		println("SetRfFrequency")
 		// Define the RF Frequency
-		lora.SetRfFrequency(868000)
-		//lora.SetRfFrequency(433000000)
+		//lora.SetRfFrequency(868000000)
 
 		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
 
