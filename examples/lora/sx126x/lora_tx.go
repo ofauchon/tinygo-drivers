@@ -4,6 +4,7 @@ package main
 //
 import (
 	"device/stm32"
+	"fmt"
 	"machine"
 	"time"
 
@@ -132,16 +133,36 @@ func main() {
 	led.Configure(machine.PinConfig{Mode: machine.PinOutput})
 
 	// This test : clock, gpio
-	for {
+	for i := 0; i < 3; i++ {
 		machine.LED.Set(true)
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Millisecond * 200)
 		machine.LED.Set(false)
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Millisecond * 200)
 	}
 
 	// Test UART 9600 baud
 	machine.UART0.Configure(machine.UARTConfig{TX: machine.UART_TX_PIN, RX: machine.UART_TX_PIN, BaudRate: 9600})
-	println("Lora_tx test")
+	for i := 0; i < 3; i++ {
+		println("Lora_tx test")
+	}
+
+	// Init radio module
+	println("SubGhzInit")
+	SubGhzInit()
+
+	//
+	println("LORA: Init Driver")
+	lora := sx126x.New(machine.SPI0)
+	xstatus(lora)
+
+	println("LORA: Read Sync word MSB")
+	addr := uint16(0x0740)
+	rs, err := lora.ReadRegister(addr, 2)
+	for i := 0; i < len(rs); i++ {
+		println("Sync reg ", fmt.Sprintf("%04x", int(addr)+i), fmt.Sprintf("%02x", rs[i]))
+
+	}
+	checkErr(err)
 
 	/*
 
@@ -160,13 +181,6 @@ func main() {
 
 		println("STM32WL Radio Init Example")
 
-		// Init radio module
-		println("SubGhzInit")
-		SubGhzInit()
-
-		println("Init Driver")
-		lora := sx126x.New(machine.SPI0)
-		//xstatus(lora)
 
 			// Switch Radio to Sleep, then Standby
 			println("Go Sleep")
@@ -179,15 +193,7 @@ func main() {
 
 		println("Read SyncWord Registers")
 
-		addr := uint16(0x0740)
-		rs, err := lora.ReadRegister(addr, 1)
-		println("~~~~~~~~~~~~~~", rs[0])
-				for i := 0; i < len(rs); i++ {
-					println("Sync reg ", fmt.Sprintf("%04x", int(addr)+i), fmt.Sprintf("%02x", rs[i]))
 
-				}
-			println("Sync reg 0x0741", rs[1])
-		checkErr(err)
 
 			xstatus(lora)
 
