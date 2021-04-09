@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"machine"
+	"runtime/volatile"
 	"time"
+	"unsafe"
 )
 
 // RadioEvent are send to application through a channel
@@ -93,6 +95,7 @@ func (d *Device) SetSleep() {
 
 // Standby switch device to RC standby mode (R)
 func (d *Device) SetStandby() {
+	println("SetStandby")
 	d.ExecSetCommand(SX126X_CMD_SET_STANDBY, []uint8{SX126X_STANDBY_RC})
 }
 
@@ -280,29 +283,34 @@ func (d *Device) WriteBuffer(data []uint8) {
 
 // CheckDeviceReady sleep until all busy flags clears
 func (d *Device) CheckDeviceReady() error {
+	//println("CheckDeviceReady")
 	if d.deepSleep == true {
+		//		println("DeepSleep, wake up SubGhz with NSS")
 		stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS)
 		time.Sleep(time.Millisecond)
 		stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS)
+		d.deepSleep = false
 	}
 	return d.WaitBusy()
 }
 
 // WaitBusy sleep until all busy flags clears
 func (d *Device) WaitBusy() error {
-	count := 10
-	var flag, mask bool
+	//	println("WaitBusy")
+	count := 2000
+	var rfbusyms, rfbusys bool
 	for count > 0 {
-		mask = stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYMS)
-		flag = stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYS)
+		//rfbusyms = stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYMS)
+		rfbusys = stm32.PWR.SR2.HasBits(stm32.PWR_SR2_RFBUSYS)
 
-		if !(flag && mask) {
+		//if !(rfbusyms && rfbusys) {
+		if !rfbusyms {
 			return nil
 		}
 		time.Sleep(time.Millisecond)
 		count--
 	}
-	println("ERR: WaitBusy timeout.")
+	println("ERR: WaitBusy timeout. rfbusys:", rfbusys, " rfbusyms:", rfbusyms)
 	return errors.New("WaitBusy Timeout")
 }
 
@@ -310,7 +318,6 @@ func (d *Device) WaitBusy() error {
 func (d *Device) ReadRegister(addr, size uint16) ([]uint8, error) {
 	d.CheckDeviceReady()
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS) // NSS=0
-
 	// Send command
 	d.SpiTx(SX126X_CMD_READ_REGISTER)
 	d.SpiTx(uint8((addr & 0xFF00) >> 8))
@@ -319,7 +326,7 @@ func (d *Device) ReadRegister(addr, size uint16) ([]uint8, error) {
 
 	var ret []uint8
 	for i := 0; i < int(size); i++ {
-		b := d.SpiRx()
+		b := d.SpiTx(0x00) // Read
 		println("IN: ", b)
 		ret = append(ret, b)
 	}
@@ -390,13 +397,16 @@ func (d *Device) SpiTx(cmd uint8) uint8 {
 	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_TXE) {
 	}
 	// Write to data register
-	stm32.SPI3.DR.Set(uint32(cmd))
+
+	//stm32.SPI3.DR.Set(uint32(cmd))
+	volatile.StoreUint8((*uint8)(unsafe.Pointer(&stm32.SPI3.DR.Reg)), cmd)
+
 	// Wait for Rx Data
 	for !stm32.SPI3.SR.HasBits(stm32.SPI_SR_RXNE) {
 	}
 	// Flush RX data
 	ret := uint8(stm32.SPI3.DR.Get())
-	println("SPITX > ", dec2hex(cmd), "<", dec2hex(ret))
+	//println("SPITX >", dec2hex(cmd), " <", dec2hex(ret))
 	return ret
 }
 
