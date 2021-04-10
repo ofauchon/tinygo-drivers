@@ -64,11 +64,10 @@ func configureLora(lora sx126x.Device) {
 	// and fire an error if not in standby mode ?
 	lora.SetStandby()
 
-	dbg("SetBufferBaseAddress")
-	lora.SetBufferBaseAddress(0, 0)
-
-	dbg("SetPacketType")
 	lora.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
+	lora.SetRfFrequency(868100000) // Needs to be done in FS/RX/TX mode ?
+
+	lora.SetBufferBaseAddress(0, 0)
 
 	// Here: Add fallback to STDBY_RC after RX/TX
 	// See: https://github.com/jgromes/RadioLib/blob/86ca714d0017419aebc5bae5b4e8010e71e66874/src/modules/SX126x/SX126x.cpp#L1550
@@ -96,7 +95,6 @@ func configureLora(lora sx126x.Device) {
 	lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
 
 	dbg("SetPaConfig")
-	//	lora.SetPaConfig(0x04, 0x07, 0x00, 0x01)
 	lora.SetPaConfig(0x02, 0x02, 0x00, 0x01)
 
 	dbg("SetTxParams") //Power and Ramping Time
@@ -148,20 +146,25 @@ func main() {
 	dbg("lora:Get Status")
 	//	xstatus(lora)
 
-	dbg("LORA: Read Sync word MSB")
-	addr := uint16(0x0740)
-	rs, err := lora.ReadRegister(addr, 1)
-	println("Sync reg ", fmt.Sprintf("%04x", int(addr)), fmt.Sprintf("%02x", rs[0]))
-	checkErr(err)
-
 	// Sleep -> Standby
 	lora.SetSleep()
 	lora.SetStandby()
 
+	configureLora(lora)
+
+	dbg("LORA: Read Sync word MSB")
+	addr := uint16(0x0740)
+	rs, err := lora.ReadRegister(addr, 2)
+	println("Lora Sync reg : ", fmt.Sprintf("%02x", rs[0]), fmt.Sprintf("%02x", rs[1]))
+	checkErr(err)
+
 	dbg("SetRfFrequency")
-	lora.SetRfFrequency(868000000) // Needs to be done in FS/RX/TX mode ?
+	lora.SetRfFrequency(868100000) // Needs to be done in FS/RX/TX mode ?
 
 	// Configure RF GPIO
+	// LoRa-E5 module ONLY transmits through RFO_HP:
+	// Receive: PA4=1, PB5=0
+	// Transmit(high output power, SMPS mode): PA4=0, PB5=1
 	rfswitchPA4 := machine.PA4
 	rfswitchPA4.Configure(machine.PinConfig{Mode: machine.PinOutput})
 	rfswitchPB5 := machine.PB5
@@ -173,30 +176,17 @@ func main() {
 
 	msg := []byte{0x00, 0xDC, 0x00, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70, 0x1E, 0x6F, 0xED, 0xF5, 0x7C, 0xEE, 0xAF, 0x00, 0x85, 0xCC, 0x58, 0x7F, 0xE9, 0x13}
 	dbg("SetPacketParam")
-	lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
+	//	lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
+	lora.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
 
 	// Send 3 packet
-	for i := 0; i < 3; i++ {
+	for u := 0; u < 2; u++ {
 		// write the payload
-		dbg("Write TX packet")
+		dbg("Write TX packet ")
 		lora.WriteBuffer(msg)
 		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
-		time.Sleep(time.Millisecond * 1000)
 		xstatus(lora)
-	}
-
-	// Rx
-	rfswitchPA4.Set(true)
-	rfswitchPB5.Set(false)
-
-	// Switch to RX
-	lora.SetRx(sx126x.SX126X_RX_TIMEOUT_NONE)
-
-	for {
-		// Show current status
-		xstatus(lora)
-		time.Sleep(time.Millisecond * 1000)
-
+		time.Sleep(time.Second * 5)
 	}
 
 }

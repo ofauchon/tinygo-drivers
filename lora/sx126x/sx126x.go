@@ -151,7 +151,7 @@ func (d *Device) SetLoraPublicNetwork(enable bool) {
 }
 
 // SetPacketParam sets various packet-related params (R)
-func (d *Device) SetPacketParam(preambleLength uint16, crcType, payloadLength, headerType, invertIQ uint8) {
+func (d *Device) SetPacketParam(preambleLength uint16, headerType, crcType, payloadLength, invertIQ uint8) {
 	var p [6]uint8
 	p[0] = uint8((preambleLength >> 8) & 0xFF)
 	p[1] = uint8(preambleLength & 0xFF)
@@ -173,7 +173,10 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 // SetRfFrequency sets the radio frequency (R)
 func (d *Device) SetRfFrequency(frequency uint32) {
 	var p [4]uint8
-	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE)) // Convert to PLL Steps
+	//	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE)) // Convert to PLL Steps
+	//  channel = (uint32_t) ((((uint64_t) freq)<<25)/(XTAL_FREQ) );               \
+
+	freq := uint32((uint64(frequency) << 25) / 32000000)
 	println("SetRfFreq:", freq)
 	p[0] = uint8((freq >> 24) & 0xFF)
 	p[1] = uint8((freq >> 16) & 0xFF)
@@ -327,7 +330,7 @@ func (d *Device) ReadRegister(addr, size uint16) ([]uint8, error) {
 	var ret []uint8
 	for i := 0; i < int(size); i++ {
 		b := d.SpiTx(0x00) // Read
-		println("IN: ", b)
+		//println("IN: ", b)
 		ret = append(ret, b)
 	}
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS) // NSS=1
