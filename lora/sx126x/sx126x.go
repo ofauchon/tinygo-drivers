@@ -78,7 +78,7 @@ func (d *Device) ClearDeviceErrors() {
 
 // GetIrqStatus returns radio status
 func (d *Device) GetIrqStatus() uint16 {
-	r := d.ExecGetCommand(SX126X_CMD_GET_STATUS, 3)
+	r := d.ExecGetCommand(SX126X_CMD_GET_IRQ_STATUS, 2)
 	ret := uint16(r[0]<<8 | r[1])
 	return ret
 }
@@ -117,9 +117,14 @@ func (d *Device) SetRx(t uint32) {
 	d.ExecSetCommand(SX126X_CMD_SET_RX, p[:])
 }
 
-// SetTxContinuousWave enable Rx Mode with Rx Timeout (R)
+// SetTxContinuousWave sends continuous Radio tone
 func (d *Device) SetTxContinuousWave() {
 	d.ExecSetCommand(SX126X_CMD_SET_TX_CONTINUOUS_WAVE, []uint8{})
+}
+
+// SetTxContinuousPreamble Send continuous preamble
+func (d *Device) SetTxContinuousPreamble() {
+	d.ExecSetCommand(SX126X_CMD_SET_TX_INFINITE_PREAMBLE, []uint8{})
 }
 
 // ---------------------------------------
@@ -157,6 +162,7 @@ func (d *Device) SetPacketParam(preambleLength uint16, headerType, crcType, payl
 	p[1] = uint8(preambleLength & 0xFF)
 	p[2] = headerType
 	p[3] = payloadLength
+	//println("******************* P3=", p[3])
 	p[4] = crcType
 	p[5] = invertIQ
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
@@ -167,7 +173,7 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 	var p [2]uint8
 	p[0] = txBaseAddress
 	p[1] = rxBaseAddress
-	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
+	d.ExecSetCommand(SX126X_CMD_SET_BUFFER_BASE_ADDRESS, p[:])
 }
 
 // SetRfFrequency sets the radio frequency (R)
@@ -277,11 +283,17 @@ func (d *Device) ClearIrqStatus(clearIrqParams uint16) {
 // BUFFERS
 // *******
 
-// WriteBuffer sets base address for buffer
+// WriteBuffer write data from current buffer position
 func (d *Device) WriteBuffer(data []uint8) {
 	p := []uint8{0} // Zero offset
 	p = append(p, data...)
 	d.ExecSetCommand(SX126X_CMD_WRITE_BUFFER, p[:])
+}
+
+// ReadBuffer Reads size bytes from current buffer position
+func (d *Device) ReadBuffer(size int) []uint8 {
+	ret := d.ExecGetCommand(SX126X_CMD_READ_BUFFER, size)
+	return ret
 }
 
 // CheckDeviceReady sleep until all busy flags clears

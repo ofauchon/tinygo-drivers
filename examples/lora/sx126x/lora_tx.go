@@ -14,6 +14,35 @@ import (
 func dbg(msg string) {
 	println(msg)
 }
+
+// byteToHex return string hex representation of byte
+func ByteToHex(b byte) string {
+	bb := (b >> 4) & 0x0F
+	ret := ""
+	if bb < 10 {
+		ret += string(rune('0' + bb))
+	} else {
+		ret += string(rune('A' + (bb - 10)))
+	}
+
+	bb = (b) & 0xF
+	if bb < 10 {
+		ret += string(rune('0' + bb))
+	} else {
+		ret += string(rune('A' + (bb - 10)))
+	}
+	return ret
+}
+
+// BytesToHexString converts byte slice to hex string representation
+func BytesToHexString(data []byte) string {
+	s := ""
+	for i := 0; i < len(data); i++ {
+		s += ByteToHex(data[i])
+	}
+	return s
+}
+
 func SubGhzInit() error {
 
 	// Enable APB3 Periph clock
@@ -60,8 +89,6 @@ func SubGhzInit() error {
 func configureLora(lora sx126x.Device) {
 
 	// Force Standby mode for configuration
-	// Maybe we could replace with a check over current state
-	// and fire an error if not in standby mode ?
 	lora.SetStandby()
 
 	lora.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
@@ -92,14 +119,16 @@ func configureLora(lora sx126x.Device) {
 	dbg("SetModulation")
 	// Set modulation params
 	// SF7 / 125 KHz / CR 4/7 / No Optimis
-	lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+	//lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+	lora.SetModulationParams(12, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
 
 	dbg("SetPaConfig")
-	lora.SetPaConfig(0x02, 0x02, 0x00, 0x01)
+	//	lora.SetPaConfig(0x02, 0x02, 0x00, 0x01)
+	lora.SetPaConfig(0x04, 0x07, 0x00, 0x01)
 
 	dbg("SetTxParams") //Power and Ramping Time
 	// Set output power and ramping time (0x16:HP22Db)
-	lora.SetTxParams(0x16, sx126x.SX126X_PA_RAMP_200U) // CHECKME
+	lora.SetTxParams(0x16, sx126x.SX126X_PA_RAMP_200U)
 
 	// Set Lora Sync Word
 	lora.SetLoraPublicNetwork(true)
@@ -109,10 +138,11 @@ func configureLora(lora sx126x.Device) {
 }
 
 func xstatus(lora sx126x.Device) {
-	dat := lora.GetStatus()
-	chipmode := (dat & (0x7 << 4)) >> 4
-	cmdstatus := (dat & (0x7 << 1)) >> 1
-	println(">> STATUS : mode:", chipmode, " cmd:", cmdstatus, " irq:", dat, "deverr", lora.GetDeviceErrors())
+	sta := lora.GetStatus()
+	sti := lora.GetIrqStatus()
+	chipmode := (sta & (0x7 << 4)) >> 4
+	cmdstatus := (sta & (0x7 << 1)) >> 1
+	println(">> STATUS : mode:", chipmode, " cmd:", cmdstatus, " irq:", sti, "deverr:", lora.GetDeviceErrors())
 	lora.ClearDeviceErrors()
 }
 
@@ -143,13 +173,18 @@ func main() {
 
 	lora := sx126x.New(machine.SPI0)
 
+	// Clear all pending Status/Errors
+	lora.ClearDeviceErrors()
+	lora.ClearIrqStatus(0xFFFF)
+
 	dbg("lora:Get Status")
-	//	xstatus(lora)
+	xstatus(lora)
 
 	// Sleep -> Standby
 	lora.SetSleep()
 	lora.SetStandby()
 
+	// Configure all Lora parameters
 	configureLora(lora)
 
 	dbg("LORA: Read Sync word MSB")
@@ -174,19 +209,50 @@ func main() {
 	rfswitchPA4.Set(false)
 	rfswitchPB5.Set(true)
 
-	msg := []byte{0x00, 0xDC, 0x00, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70, 0x1E, 0x6F, 0xED, 0xF5, 0x7C, 0xEE, 0xAF, 0x00, 0x85, 0xCC, 0x58, 0x7F, 0xE9, 0x13}
 	dbg("SetPacketParam")
-	//	lora.SetPacketParam(10, 0x04, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
-	lora.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, uint8(len(msg)), sx126x.SX126X_LORA_CRC_ON, sx126x.SX126X_LORA_IQ_STANDARD)
+	lora.SetDioIrqParams(sx126x.SX126X_IRQ_TX_DONE|sx126x.SX126X_IRQ_TIMEOUT, sx126x.SX126X_IRQ_TX_DONE, 0x00, 0x00)
 
-	// Send 3 packet
-	for u := 0; u < 2; u++ {
-		// write the payload
-		dbg("Write TX packet ")
-		lora.WriteBuffer(msg)
+	msg := []byte{0x00, 0xDC, 0x00, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70, 0x1E, 0x6F, 0xED, 0xF5, 0x7C, 0xEE, 0xAF, 0x00, 0x85, 0xCC, 0x58, 0x7F, 0xE9, 0x13}
+	//msg := []byte{0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03}
+
+	for i := 0; i < 1; i++ {
+
+		ll := len(msg)
+		println("LEN:", ll)
+
+		lora.SetBufferBaseAddress(0, 0)
+
+		/*
+			print("> ", BytesToHexString(msg))
+
+			println("Write buffer")
+			lora.SetBufferBaseAddress(0, 0)
+			lora.WriteBuffer(msg)
+			lora.SetBufferBaseAddress(0, 0)
+			r := lora.ReadBuffer(ll)
+			println("< ", BytesToHexString(r))
+		*/
+
+		// Define packet and modulation configuration
+		lora.SetModulationParams(8, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+		lora.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, sx126x.SX126X_LORA_CRC_ON, uint8(ll), sx126x.SX126X_LORA_IQ_STANDARD)
+
+		// Switch to TX
 		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
 		xstatus(lora)
-		time.Sleep(time.Second * 5)
+
+		// Wait for TXDone
+		for !(lora.GetIrqStatus()&0x01 == 0x01) {
+			time.Sleep(time.Millisecond)
+		}
+		println("TX Done")
+		xstatus(lora)
+		// Clear Irq TxDone Flag
+		lora.ClearIrqStatus(0x01)
+
+		time.Sleep(time.Second * 1)
 	}
+
+	//lora.SetTxContinuousPreamble()
 
 }
