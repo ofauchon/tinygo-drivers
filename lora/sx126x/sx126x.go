@@ -63,6 +63,12 @@ func (d *Device) GetPacketType() uint8 {
 	return r[0]
 }
 
+// GetRxBufferStatus returns details about the last received packet
+func (d *Device) GetRxBufferStatus() []uint8 {
+	r := d.ExecGetCommand(SX126X_CMD_GET_RX_BUFFER_STATUS, 2)
+	return r
+}
+
 // GetDeviceErrors returns current Device Errors
 func (d *Device) GetDeviceErrors() uint16 {
 	r := d.ExecGetCommand(SX126X_CMD_GET_DEVICE_ERRORS, 2)
@@ -162,7 +168,6 @@ func (d *Device) SetPacketParam(preambleLength uint16, headerType, crcType, payl
 	p[1] = uint8(preambleLength & 0xFF)
 	p[2] = headerType
 	p[3] = payloadLength
-	//println("******************* P3=", p[3])
 	p[4] = crcType
 	p[5] = invertIQ
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
@@ -179,11 +184,7 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 // SetRfFrequency sets the radio frequency (R)
 func (d *Device) SetRfFrequency(frequency uint32) {
 	var p [4]uint8
-	//	freq := uint32(float64(frequency) / float64(SX126X_FREQUENCY_STEP_SIZE)) // Convert to PLL Steps
-	//  channel = (uint32_t) ((((uint64_t) freq)<<25)/(XTAL_FREQ) );               \
-
 	freq := uint32((uint64(frequency) << 25) / 32000000)
-	println("SetRfFreq:", freq)
 	p[0] = uint8((freq >> 24) & 0xFF)
 	p[1] = uint8((freq >> 16) & 0xFF)
 	p[2] = uint8((freq >> 8) & 0xFF)
@@ -291,7 +292,7 @@ func (d *Device) WriteBuffer(data []uint8) {
 }
 
 // ReadBuffer Reads size bytes from current buffer position
-func (d *Device) ReadBuffer(size int) []uint8 {
+func (d *Device) ReadBuffer(size uint8) []uint8 {
 	ret := d.ExecGetCommand(SX126X_CMD_READ_BUFFER, size)
 	return ret
 }
@@ -386,7 +387,7 @@ func (d *Device) ExecSetCommand(cmd uint8, buf []uint8) {
 }
 
 // ExecGetCommand queries the peripheral the peripheral
-func (d *Device) ExecGetCommand(cmd uint8, size int) []uint8 {
+func (d *Device) ExecGetCommand(cmd uint8, size uint8) []uint8 {
 	d.CheckDeviceReady()
 	stm32.PWR.SUBGHZSPICR.ClearBits(stm32.PWR_SUBGHZSPICR_NSS) // NSS=0
 	// Send the command and flush first status byte (as not used)
@@ -394,7 +395,7 @@ func (d *Device) ExecGetCommand(cmd uint8, size int) []uint8 {
 	d.SpiTx(0x00)
 	var ret []uint8
 	// Receive given number of bytes from radio
-	for i := 0; i < size; i++ {
+	for i := uint8(0); i < size; i++ {
 		ret = append(ret, d.SpiTx(0xFF))
 	}
 	stm32.PWR.SUBGHZSPICR.SetBits(stm32.PWR_SUBGHZSPICR_NSS) // NSS=1

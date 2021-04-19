@@ -4,16 +4,19 @@ package main
 //
 import (
 	"device/stm32"
-	"fmt"
+	"errors"
 	"machine"
 	"time"
 
+	"github.com/ofauchon/go-lorawan-stack"
 	"tinygo.org/x/drivers/lora/sx126x"
 )
 
 func dbg(msg string) {
 	println(msg)
 }
+
+const ()
 
 // byteToHex return string hex representation of byte
 func ByteToHex(b byte) string {
@@ -43,6 +46,7 @@ func BytesToHexString(data []byte) string {
 	return s
 }
 
+// SubGhzInit enable radio module
 func SubGhzInit() error {
 
 	// Enable APB3 Periph clock
@@ -85,56 +89,40 @@ func SubGhzInit() error {
 	return nil
 }
 
-// DS.SX1261-2.W.APP section 14.2 p99
-func configureLora(lora sx126x.Device) {
+// configureLora initialize
+func configureLora(radio sx126x.Device) {
 
-	// Force Standby mode for configuration
-	lora.SetStandby()
+	radio.SetStandby()
 
-	lora.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
-	lora.SetRfFrequency(868100000) // Needs to be done in FS/RX/TX mode ?
+	radio.SetPacketType(sx126x.SX126X_PACKET_TYPE_LORA)
+	radio.SetRfFrequency(868100000) // Needs to be done in FS/RX/TX mode ?
 
-	lora.SetBufferBaseAddress(0, 0)
+	radio.SetBufferBaseAddress(0, 0)
 
-	// Here: Add fallback to STDBY_RC after RX/TX
-	// See: https://github.com/jgromes/RadioLib/blob/86ca714d0017419aebc5bae5b4e8010e71e66874/src/modules/SX126x/SX126x.cpp#L1550
+	radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
+	radio.SetDioIrqParams(sx126x.SX126X_IRQ_TX_DONE|sx126x.SX126X_IRQ_TIMEOUT|sx126x.SX126X_IRQ_RX_DONE, sx126x.SX126X_IRQ_TX_DONE, 0x00, 0x00)
 
-	// Here: Add CAD Configuration
-	// See: https://github.com/jgromes/RadioLib/blob/86ca714d0017419aebc5bae5b4e8010e71e66874/src/modules/SX126x/SX126x.cpp#L1561
+	radio.CalibrateAll()
+	time.Sleep(10 * time.Millisecond)
 
-	dbg("Configure Dio Irq")
-	lora.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
-	lora.SetDioIrqParams(sx126x.SX126X_IRQ_NONE, sx126x.SX126X_IRQ_NONE, sx126x.SX126X_IRQ_NONE, sx126x.SX126X_IRQ_NONE)
+	radio.SetCurrentLimit(60)
 
-	dbg("Calibrate all blocks")
-	lora.CalibrateAll()
-	time.Sleep(10 * time.Millisecond) //(See Man sec.13.1.12)
+	radio.SetModulationParams(12, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+	radio.SetPaConfig(0x04, 0x07, 0x00, 0x01)
+	radio.SetTxParams(0x16, sx126x.SX126X_PA_RAMP_200U)
+	radio.SetBufferBaseAddress(0, 0)
 
-	// Here: Add optionnal TCXO configuration
-	// https://github.com/jgromes/RadioLib/blob/86ca714d0017419aebc5bae5b4e8010e71e66874/src/modules/SX126x/SX126x.cpp#L110
+	radio.SetLoraPublicNetwork(true)
 
-	dbg("Limit current")
-	lora.SetCurrentLimit(60)
+	radio.ClearDeviceErrors()
+	radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
 
-	dbg("SetModulation")
-	// Set modulation params
-	// SF7 / 125 KHz / CR 4/7 / No Optimis
-	//lora.SetModulationParams(7, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
-	lora.SetModulationParams(12, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
-
-	dbg("SetPaConfig")
-	//	lora.SetPaConfig(0x02, 0x02, 0x00, 0x01)
-	lora.SetPaConfig(0x04, 0x07, 0x00, 0x01)
-
-	dbg("SetTxParams") //Power and Ramping Time
-	// Set output power and ramping time (0x16:HP22Db)
-	lora.SetTxParams(0x16, sx126x.SX126X_PA_RAMP_200U)
-
-	// Set Lora Sync Word
-	lora.SetLoraPublicNetwork(true)
-
-	// TODO: Set regulator DCDC/LDO
-
+	// Configure RF GPIO
+	// LoRa-E5 module ONLY transmits through RFO_HP:
+	// Receive: PA4=1, PB5=0
+	// Transmit(high output power, SMPS mode): PA4=0, PB5=1
+	machine.PA4.Configure(machine.PinConfig{Mode: machine.PinOutput})
+	machine.PB5.Configure(machine.PinConfig{Mode: machine.PinOutput})
 }
 
 func xstatus(lora sx126x.Device) {
@@ -155,6 +143,126 @@ func checkErr(e error) {
 	}
 }
 
+// LoraTx
+func LoraTx(radio sx126x.Device, pkt []uint8) error {
+
+	radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
+	timeout := (uint32)(1000000 / 15.625) // 1sec
+
+	// Set correct output (LoraE5 specific)
+	machine.PA4.Set(false)
+	machine.PB5.Set(true)
+
+	// Define packet and modulation configuration (CRC ON, IQ OFF)
+	radio.SetRfFrequency(868100000)
+	radio.SetModulationParams(8, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+	radio.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, sx126x.SX126X_LORA_CRC_ON, uint8(len(pkt)), sx126x.SX126X_LORA_IQ_STANDARD)
+
+	// Copy and send packet
+	radio.SetBufferBaseAddress(0, 0)
+	radio.WriteBuffer(pkt)
+	radio.SetTx(timeout)
+
+	for {
+		irq := radio.GetIrqStatus()
+		radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
+
+		if irq&sx126x.SX126X_IRQ_TX_DONE == sx126x.SX126X_IRQ_TX_DONE {
+			return nil
+		} else if irq&sx126x.SX126X_IRQ_TIMEOUT == sx126x.SX126X_IRQ_TIMEOUT {
+			return errors.New("Tx timeout")
+		} else if irq > 0 {
+			println("IRQ value", irq)
+			return errors.New("Unexpected IRQ value")
+		}
+		time.Sleep(time.Millisecond * 100) // Check status every 100ms
+	}
+}
+
+// LoraRx
+func LoraRx(radio sx126x.Device, timeoutSec uint8) ([]uint8, error) {
+
+	radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
+	timeout := uint32(float32(timeoutSec) * 1000000 / 15.625)
+
+	// Wait RX
+	machine.PA4.Set(true)
+	machine.PB5.Set(false)
+
+	// Define packet and modulation configuration (CRC OFF, IQ ON)
+	radio.SetRfFrequency(868100000)
+	radio.SetModulationParams(8, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
+	radio.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, sx126x.SX126X_LORA_CRC_OFF, 1, sx126x.SX126X_LORA_IQ_INVERTED)
+
+	for { // We'll leave the loop either with RXDone or with Timeout
+		radio.SetRx(timeout)
+		irq := radio.GetIrqStatus()
+		radio.ClearIrqStatus(sx126x.SX126X_IRQ_ALL)
+
+		if irq&sx126x.SX126X_IRQ_RX_DONE == sx126x.SX126X_IRQ_RX_DONE {
+			st := radio.GetRxBufferStatus()
+			println("Rx Buffer Status", st[0], st[1])
+			radio.SetBufferBaseAddress(0, st[1]) // Skip first byte
+			pkt := radio.ReadBuffer(st[0] + 1)
+			pkt = pkt[1:] // Skip first char ??? checkthat
+			return pkt, nil
+		} else if irq&sx126x.SX126X_IRQ_TIMEOUT == sx126x.SX126X_IRQ_TIMEOUT {
+			return nil, errors.New("Rx timeout")
+		} else if irq > 0 {
+			println("IRQ value", irq)
+			return nil, errors.New("RX:Unexpected IRQ value")
+		}
+		time.Sleep(time.Millisecond * 100) // Check status every 100ms
+	}
+
+}
+
+func LoraJoin(radio sx126x.Device, lorastack *lorawan.LoraWanStack) error {
+	// Generate Lora Join Request
+	pktJoin, err := lorastack.GenerateJoinRequest()
+	if err != nil {
+		return err
+	}
+	// Sent Join Request
+	err = LoraTx(radio, pktJoin)
+	if err != nil {
+		return err
+	}
+	// Wait for Join Accept for 15sec
+	var pkt []uint8
+	pkt, err = LoraRx(radio, 15)
+	if err == nil {
+		err = lorastack.DecodeJoinAccept(pkt)
+		if err == nil {
+			println("Lora: Now joined !")
+			return nil
+		}
+	}
+	return errors.New("Lora Join Accept timeout")
+
+}
+
+func LoraUplink(radio sx126x.Device, lorastack *lorawan.LoraWanStack, msg []uint8) error {
+	// Generate Lora Join Request
+	pkt, err := lorastack.GenMessage(0, msg)
+	if err != nil {
+		return err
+	}
+	// Sent Join Request
+	println("Uplink:", BytesToHexString(pkt))
+	println("Nwskey:", BytesToHexString(lorastack.Session.NwkSKey[:]))
+	println("Appsley:", BytesToHexString(lorastack.Session.AppSKey[:]))
+	println("Uplink:", BytesToHexString(pkt))
+	err = LoraTx(radio, pkt)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+/**************************
+ *
+ ***************************/
 func main() {
 
 	// Configure LED GPIO
@@ -164,95 +272,37 @@ func main() {
 	time.Sleep(time.Millisecond * 250)
 	machine.LED.Set(false)
 
-	// Test UART 9600 baud
+	// Enable uart 9600 baud
 	machine.UART0.Configure(machine.UARTConfig{TX: machine.UART_TX_PIN, RX: machine.UART_TX_PIN, BaudRate: 9600})
-	println("Lora_tx test A")
 
-	dbg("Init SubGhz device")
+	// Init embedded radio module
 	SubGhzInit()
 
-	lora := sx126x.New(machine.SPI0)
-
-	// Clear all pending Status/Errors
-	lora.ClearDeviceErrors()
-	lora.ClearIrqStatus(0xFFFF)
-
-	dbg("lora:Get Status")
-	xstatus(lora)
-
-	// Sleep -> Standby
-	lora.SetSleep()
-	lora.SetStandby()
+	// Create the driver
+	radio := sx126x.New(machine.SPI0)
 
 	// Configure all Lora parameters
-	configureLora(lora)
+	configureLora(radio)
 
-	dbg("LORA: Read Sync word MSB")
-	addr := uint16(0x0740)
-	rs, err := lora.ReadRegister(addr, 2)
-	println("Lora Sync reg : ", fmt.Sprintf("%02x", rs[0]), fmt.Sprintf("%02x", rs[1]))
-	checkErr(err)
+	lorastack := &lorawan.LoraWanStack{}
+	// APP_KEY 2B7E151628AED2A6ABF7158809CF4F3C
+	lorastack.Otaa.AppEUI = [8]byte{0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10}
+	lorastack.Otaa.DevEUI = [8]byte{0x00, 0x80, 0xE1, 0x01, 0x01, 0x01, 0x01, 0x01}
+	lorastack.Otaa.AppKey = [16]byte{0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C}
+	r, _ := radio.ReadRegister(sx126x.SX126X_REG_RANDOM_NUMBER_0, 2)
+	lorastack.Otaa.DevNonce[0] = r[0]
+	lorastack.Otaa.DevNonce[1] = r[1]
 
-	dbg("SetRfFrequency")
-	lora.SetRfFrequency(868100000) // Needs to be done in FS/RX/TX mode ?
-
-	// Configure RF GPIO
-	// LoRa-E5 module ONLY transmits through RFO_HP:
-	// Receive: PA4=1, PB5=0
-	// Transmit(high output power, SMPS mode): PA4=0, PB5=1
-	rfswitchPA4 := machine.PA4
-	rfswitchPA4.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	rfswitchPB5 := machine.PB5
-	rfswitchPB5.Configure(machine.PinConfig{Mode: machine.PinOutput})
-
-	// Tx
-	rfswitchPA4.Set(false)
-	rfswitchPB5.Set(true)
-
-	dbg("SetPacketParam")
-	lora.SetDioIrqParams(sx126x.SX126X_IRQ_TX_DONE|sx126x.SX126X_IRQ_TIMEOUT, sx126x.SX126X_IRQ_TX_DONE, 0x00, 0x00)
-
-	msg := []byte{0x00, 0xDC, 0x00, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70, 0x1E, 0x6F, 0xED, 0xF5, 0x7C, 0xEE, 0xAF, 0x00, 0x85, 0xCC, 0x58, 0x7F, 0xE9, 0x13}
-	//msg := []byte{0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03}
-
-	for i := 0; i < 1; i++ {
-
-		ll := len(msg)
-		println("LEN:", ll)
-
-		lora.SetBufferBaseAddress(0, 0)
-
-		/*
-			print("> ", BytesToHexString(msg))
-
-			println("Write buffer")
-			lora.SetBufferBaseAddress(0, 0)
-			lora.WriteBuffer(msg)
-			lora.SetBufferBaseAddress(0, 0)
-			r := lora.ReadBuffer(ll)
-			println("< ", BytesToHexString(r))
-		*/
-
-		// Define packet and modulation configuration
-		lora.SetModulationParams(8, sx126x.SX126X_LORA_BW_125_0, sx126x.SX126X_LORA_CR_4_7, sx126x.SX126X_LORA_LOW_DATA_RATE_OPTIMIZE_OFF)
-		lora.SetPacketParam(8, sx126x.SX126X_LORA_HEADER_EXPLICIT, sx126x.SX126X_LORA_CRC_ON, uint8(ll), sx126x.SX126X_LORA_IQ_STANDARD)
-
-		// Switch to TX
-		lora.SetTx(sx126x.SX126X_TX_TIMEOUT_NONE)
-		xstatus(lora)
-
-		// Wait for TXDone
-		for !(lora.GetIrqStatus()&0x01 == 0x01) {
-			time.Sleep(time.Millisecond)
+	// Join LORA
+	err := LoraJoin(radio, lorastack)
+	if err == nil {
+		println("Lora Join Success")
+		err = LoraUplink(radio, lorastack, []byte("TinyGo Lorawan"))
+		if err != nil {
+			println("Lora Uplink failed ", err)
 		}
-		println("TX Done")
-		xstatus(lora)
-		// Clear Irq TxDone Flag
-		lora.ClearIrqStatus(0x01)
-
-		time.Sleep(time.Second * 1)
+	} else {
+		println("Lora Join Failed ", err)
 	}
-
-	//lora.SetTxContinuousPreamble()
 
 }
