@@ -27,3 +27,8 @@ tinygo flash -target pybadge -tags featherwing ./examples/lora/atcmd/
 tinygo flash -target lorae5 ./examples/lora/atcmd/
 ```
 
+## Bluepill clone 
+
+```
+tinygo flash -target bluepill-clone -tags featherwin
+```
