@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"strings"
+	"time"
 )
 
 // Use to test if connection to module is OK.
@@ -337,10 +338,14 @@ func send(data string) error {
 	// remove leading/trailing quotes
 	data = strings.Trim(data, "\"'")
 
-	if err := radio.Tx([]byte(data), defaultTimeout); err != nil {
-		writeCommandOutput(cmd, err.Error())
+	for i := 0; i < 10; i++ {
+		writeCommandOutput(cmd, "Send #"+string(i))
+		if err := radio.Tx([]byte(data), defaultTimeout); err != nil {
+			writeCommandOutput(cmd, err.Error())
 
-		return err
+			return err
+		}
+		time.Sleep(time.Second * 5)
 	}
 
 	writeCommandOutput(cmd, "Done")
@@ -376,12 +381,19 @@ func sendhex(data string) error {
 func recv(setting string) error {
 	cmd := "RECV"
 
-	data, err := lorarx()
-	if err != nil {
-		writeCommandOutput(cmd, "ERROR "+err.Error())
-		return err
+	var data []byte
+	var err error
+	for i := 0; i < 20; i++ {
+		writeCommandOutput(cmd, "RECV #"+string(i))
+		data, err = lorarx()
+		if err != nil {
+			writeCommandOutput(cmd, "ERROR "+err.Error())
+			return err
+		}
+		writeCommandOutput(cmd, string(data))
 	}
-	writeCommandOutput(cmd, string(data))
+
+	//	writeCommandOutput(cmd, string(data))
 
 	return nil
 }
