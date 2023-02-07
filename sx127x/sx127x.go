@@ -243,6 +243,11 @@ func (d *Device) SetHopPeriod(val uint8) {
 // LORA FUNCTIONS
 //
 
+// GetLoraConfig get current Lora configuration
+func (d *Device) GetLoraConfig() lora.Config {
+	return d.loraConf
+}
+
 // LoraConfig() defines Lora configuration for next Lora operations
 func (d *Device) LoraConfig(cnf lora.Config) {
 	// Save given configuration

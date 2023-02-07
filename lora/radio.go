@@ -16,4 +16,5 @@ type Radio interface {
 	SetPublicNetwork(enable bool)
 	SetHeaderType(headerType uint8)
 	LoraConfig(cnf Config)
+	GetLoraConfig() Config
 }

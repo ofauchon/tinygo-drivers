@@ -587,6 +587,11 @@ func (d *Device) SetHeaderType(headerType uint8) {
 //
 //
 
+// GetLoraConfig get current Lora configuration
+func (d *Device) GetLoraConfig() lora.Config {
+	return d.loraConf
+}
+
 // LoraConfig() defines Lora configuration for next Lora operations
 func (d *Device) LoraConfig(cnf lora.Config) {
 	// Save given configuration
