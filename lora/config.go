@@ -83,3 +83,65 @@ const (
 	MHz_916_8 = 916800000
 	MHz_923_3 = 923300000
 )
+
+func SFToString(sf uint8) string {
+	switch sf {
+	case SpreadingFactor5:
+		return "SF5"
+	case SpreadingFactor6:
+		return "SF6"
+	case SpreadingFactor7:
+		return "SF7"
+	case SpreadingFactor8:
+		return "SF8"
+	case SpreadingFactor9:
+		return "SF9"
+	case SpreadingFactor10:
+		return "SF10"
+	case SpreadingFactor11:
+		return "SF11"
+	case SpreadingFactor12:
+		return "SF12"
+	}
+	return "N/A"
+}
+
+func CRToString(sf uint8) string {
+	switch sf {
+	case CodingRate4_8:
+		return "4/8"
+	case CodingRate4_7:
+		return "4/7"
+	case CodingRate4_6:
+		return "4/6"
+	case CodingRate4_5:
+		return "4/5"
+	}
+	return "N/A"
+}
+
+func BWToString(sf uint8) string {
+	switch sf {
+	case Bandwidth_7_8:
+		return "BW7"
+	case Bandwidth_10_4:
+		return "BW10"
+	case Bandwidth_15_6:
+		return "BW15"
+	case Bandwidth_20_8:
+		return "BW20"
+	case Bandwidth_31_25:
+		return "BW31"
+	case Bandwidth_41_7:
+		return "BW41"
+	case Bandwidth_62_5:
+		return "BW62"
+	case Bandwidth_125_0:
+		return "BW125"
+	case Bandwidth_250_0:
+		return "BW250"
+	case Bandwidth_500_0:
+		return "BW500"
+	}
+	return "N/A"
+}
