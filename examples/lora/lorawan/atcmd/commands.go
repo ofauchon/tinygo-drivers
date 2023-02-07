@@ -8,6 +8,15 @@ import (
 	"tinygo.org/x/drivers/lora/lorawan"
 )
 
+const (
+	TEST_STOP = iota
+	TEST_PKTFWD
+)
+
+var (
+	testMode = TEST_STOP
+)
+
 // Use to test if connection to module is OK.
 func quicktest() {
 	writeCommandOutput("AT", "OK")
@@ -402,10 +411,30 @@ func uartcmd(setting string) error {
 	return nil
 }
 
+// AT+TEST=PKTFWD
+// AT+TEST=STOP
+// AT+TEST=?
 func test(setting string) error {
 	cmd := "TEST"
-	writeCommandOutput(cmd, "Not implemented")
 
+	switch setting {
+	case "PKTFWD":
+		if testMode == TEST_STOP {
+			testMode = TEST_PKTFWD
+			go pktFwdTask()
+		}
+	case "STOP":
+		testMode = TEST_STOP
+	case "?":
+		switch testMode {
+		case TEST_STOP:
+			writeCommandOutput(cmd, "STOP")
+		case TEST_PKTFWD:
+			writeCommandOutput(cmd, "PKTFWD")
+		}
+	default:
+		return errInvalidCommand
+	}
 	return nil
 }
 
@@ -482,6 +511,11 @@ func recvhex(setting string) error {
 	}
 	writeCommandOutput(cmd, string(data))
 
+	return nil
+}
+
+func pktfwd(setting string) error {
+	go pktFwdTask()
 	return nil
 }
 
