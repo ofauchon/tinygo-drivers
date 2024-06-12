@@ -40,18 +40,18 @@ func main() {
 	}
 
 	// Configure radio
-	radio.SetPacketType(sx126x.SX126X_PACKET_TYPE_GFSK)
-	radio.SetFrequency(868000)
+	radio.BeginFSK(0, 0, 0, 0, 0, false)
+	radio.SetFrequency(868850)
 	radio.SetPreambleLength(512)
 	radio.SetTxPower(20)
-	radio.SetCurrentLimit(20)
-	radio.SetSyncWord(0x7fd9)
+	//radio.SetCurrentLimit(20)
+	//radio.SetSyncWord(0x7fd9)
 	//	radio.setRxBoostedGainMode(true)
-	//radio.SetBitRate(38.4)
+	radio.SetBitRate(38.4)
 	radio.SetFrequencyDeviation(19.2)
-	//radio.setDataShaping(RADIOLIB_SHAPING_NONE)
+	radio.SetDataShaping(sx126x.SX126X_GFSK_FILTER_NONE)
 	//radio.SetEncoding(RADIOLIB_ENCODING_NRZ)
-	//radio.SetRxBandwidth(234.3) //312.0); //(250.0);
+	radio.SetRxBandwidth(sx126x.SX126X_GFSK_RX_BW_234_3)
 	//radio.SetCRC(0, 0x0000, 0x8408, false)
 	//radio.DisableAddressFiltering()
 

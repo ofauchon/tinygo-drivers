@@ -192,8 +192,9 @@ const (
 	SX126X_DIO3_OUTPUT_3_3 = 0x07 //  7     0                                   3.3 V
 
 	//SX126X_CMD_SET_PACKET_TYPE
-	SX126X_PACKET_TYPE_GFSK = 0x00 //  7     0     packet type: GFSK
-	SX126X_PACKET_TYPE_LORA = 0x01 //  7     0                  LoRa
+	SX126X_PACKET_TYPE_GFSK    = 0x00 //  7     0     packet type: GFSK
+	SX126X_PACKET_TYPE_LORA    = 0x01 //  7     0                  LoRa
+	SX126X_PACKET_TYPE_LR_FHSS = 0x03 // LR-FHSS
 
 	//SX126X_CMD_SET_TX_PARAMS
 	SX126X_PA_RAMP_10U   = 0x00 //  7     0     ramp time: 10 us
