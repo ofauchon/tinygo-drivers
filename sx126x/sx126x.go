@@ -4,8 +4,10 @@
 package sx126x
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"machine"
@@ -20,6 +22,11 @@ var (
 	errRadioNotFound          = errors.New("LoRa radio not found")
 	errUnexpectedRxRadioEvent = errors.New("Unexpected Radio Event during RX")
 	errUnexpectedTxRadioEvent = errors.New("Unexpected Radio Event during TX")
+	errInvalidRxBandwidth     = errors.New("Invalid Rx Bandwidth")
+	errInvalidCRCConfig       = errors.New("Invalid CRC Configuration")
+	errInvalidFreqDev         = errors.New("Invalid Frequency Deviation")
+	errInvalidBaudrate        = errors.New("Invalid baudrate")
+	errNoControler            = errors.New("No controler attached to radio")
 	errWrongOperation         = errors.New("Wrong packet type operation")
 )
 
@@ -57,17 +64,17 @@ type Device struct {
 	spiTxBuf       []byte               // global Tx buffer to avoid heap allocations in interrupt
 	spiRxBuf       []byte               // global Rx buffer to avoid heap allocations in interrupt
 
-	frequencyDeviation uint32 // Fréquency deviation (after register convertion)
-	frequency          uint32 // Fréquency deviation (after register convertion)
-	preambleTypeFsk    uint16 // Preamble length while in FSK
-	preambleTypeLora   uint16 // Preamble length while in Lora
-	txPower            int8   // TX Power in dB
+	frequencyDeviation uint32  // Fréquency deviation (after register convertion)
+	frequency          float32 // Fréquency deviation (after register convertion)
+	preambleTypeLora   uint16  // Preamble length while in Lora
+	txPower            int8    // TX Power in dB
 
-	// Internal configuration .. Not externaly usable (raw register values)
+	// Internal configuration .. Not externaly usable (most are raw register values)
+	rxBandwidthKhz    float64
+	preambleLengthFsk uint16 // Preamble length while in FSK
 	bitRate           uint32
 	frequencyDev      uint32
 	rxBandwidth       uint8
-	rxBandwidthKhz    float64
 	pulseShape        uint8
 	crcTypeFSK        uint8
 	preambleLengthFSK uint16
@@ -75,6 +82,7 @@ type Device struct {
 	syncWordLength    uint8
 	whitening         uint8
 	packetType        uint8
+	preambleDetectLen uint8
 }
 
 // New creates a new SX126x connection.
@@ -163,26 +171,31 @@ func (d *Device) SetStandby() {
 }
 
 // SetFs sets the device in frequency synthesis mode where the PLL is locked to the carrier frequency.
-func (d *Device) SetFs() {
+func (d *Device) SetFs() error {
 	d.ExecSetCommand(SX126X_CMD_SET_FS, []uint8{})
+	return nil
 }
 
 // SetTxContinuousWave set device in test mode to generate a continuous wave (RF tone)
-func (d *Device) SetTxContinuousWave() {
-	if d.controller != nil {
-		d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
+func (d *Device) SetTxContinuousWave() error {
+	if d.controller == nil {
+		return errNoControler
 	}
+	d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
 	d.ExecSetCommand(SX126X_CMD_SET_TX_CONTINUOUS_WAVE, []uint8{})
+	return nil
 }
 
 // SetTxContinuousPreamble set device in test mode to constantly modulate LoRa preamble symbols.
 // Take care to initialize all Lora settings like it's done in Tx before calling this function
 // If you don't init properly all the settings, it'll fail
-func (d *Device) SetTxContinuousPreamble() {
-	if d.controller != nil {
-		d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
+func (d *Device) SetTxContinuousPreamble() error {
+	if d.controller == nil {
+		return errNoControler
 	}
+	d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
 	d.ExecSetCommand(SX126X_CMD_SET_TX_INFINITE_PREAMBLE, []uint8{})
+	return nil
 }
 
 // SetTx() sets the device in TX mode
@@ -398,6 +411,7 @@ func (d *Device) GetLoraStats() (nbPktReceived, nbPktCrcError, nbPktHeaderErr ui
 
 // SetPacketType sets the packet type
 func (d *Device) SetPacketType(packetType uint8) {
+	Debug("Set Packet Type: ", packetType)
 	d.packetType = packetType
 	var p [1]uint8
 	p[0] = packetType
@@ -460,6 +474,7 @@ func (d *Device) SetPacketParamFSK(preambleLen uint16, crcType uint8, syncWordLe
 	p[7] = crcType
 	p[8] = whiten
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
+	println("SetPacketParamFSK values: ", hex.EncodeToString(p[:]))
 	return nil
 }
 
@@ -471,25 +486,30 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 	d.ExecSetCommand(SX126X_CMD_SET_BUFFER_BASE_ADDRESS, p[:])
 }
 
-// SetRfFrequency sets the radio frequency
-func (d *Device) SetRfFrequency(frequency uint32) {
+// SetFrequency sets the radio frequency
+// freq is the new frequency, in mhz (eg 868,120)
+func (d *Device) SetFrequency(freq float32) error {
 	var p [4]uint8
-	freq := uint32((uint64(frequency) << 25) / 32000000)
-	p[0] = uint8((freq >> 24) & 0xFF)
-	p[1] = uint8((freq >> 16) & 0xFF)
-	p[2] = uint8((freq >> 8) & 0xFF)
-	p[3] = uint8((freq >> 0) & 0xFF)
+	frf := uint32(freq*float32(uint64(1)<<SX126X_DIV_EXPONENT)) / SX126X_CRYSTAL_FREQ_MHZ
+	frf = 0x364ECCCC
+	p[0] = uint8((frf >> 24) & 0xFF)
+	p[1] = uint8((frf >> 16) & 0xFF)
+	p[2] = uint8((frf >> 8) & 0xFF)
+	p[3] = uint8((frf >> 0) & 0xFF)
 	d.ExecSetCommand(SX126X_CMD_SET_RF_FREQUENCY, p[:])
+	println("SetRfFrequency bytes: ", hex.EncodeToString(p[:]))
+	return nil
 }
 
 // SetCurrentLimit sets max current in the module
-func (d *Device) SetCurrentLimit(limit uint8) {
+func (d *Device) SetCurrentLimit(limit uint8) error {
 	if limit > 140 {
 		limit = 140
 	}
 	rawLimit := uint8(float32(limit) / 2.5)
 	p := []uint8{rawLimit}
 	d.WriteRegister(SX126X_REG_OCP_CONFIGURATION, p[:])
+	return nil
 }
 
 // SetTxConfig sets power and rampup time
@@ -539,6 +559,7 @@ func (d *Device) SetModulationParams(spreadingFactor, bandwidth, codingRate, low
 
 // SetModulationParamsFSK sets the FSK modulation parameters
 func (d *Device) SetModulationParamsFSK(baudRate uint32, pulseShape uint8, rxBandwidth uint8, freqDeviation uint32) error {
+
 	if d.packetType != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
@@ -552,6 +573,8 @@ func (d *Device) SetModulationParamsFSK(baudRate uint32, pulseShape uint8, rxBan
 	p[6] = uint8((freqDeviation >> 8) & 0xFF)
 	p[7] = uint8(freqDeviation & 0xFF)
 	d.ExecSetCommand(SX126X_CMD_SET_MODULATION_PARAMS, p[:])
+	println("SetModulationParamsFSK values: ", hex.EncodeToString(p[:]))
+
 	return nil
 }
 
@@ -606,12 +629,15 @@ func (d *Device) ExecGetCommand(cmd uint8, size uint8) []uint8 {
 // Configuration
 //
 
-// SetFrequency() Sets current Lora Frequency
-// NB: Change will be applied at next RX / TX
-func (d *Device) SetFrequency(freq uint32) {
+// SetFrequency() Sets current radio frequency
+/*
+func (d *Device) SetFrequency(freq uint32) error {
 	d.frequency = freq
 	d.loraConf.Freq = freq
+	d.SetRfFrequency(freq)
+	return nil // TODO CHECKS
 }
+*/
 
 // SetIqMode() defines the current IQ Mode (Standard/Inverted)
 // NB: Change will be applied at next RX / TX
@@ -629,25 +655,70 @@ func (d *Device) SetCodingRate(cr uint8) {
 	d.loraConf.Cr = cr
 }
 
-// SetCrc() sets current CRC mode (ON/OFF)
-// NB: Change will be applied at next RX / TX
-func (d *Device) SetCrc(enable bool) {
-	if enable {
-		d.loraConf.Crc = lora.CRCOn
+// SetCrc() sets current CRC
+func (d *Device) SetCrc(len uint8, initial uint16, polynomial uint16, inverted bool) error {
+	pt := d.GetPacketType()
+	if pt == SX126X_PACKET_TYPE_LORA {
+		// LoRa CRC doesn't allow to set CRC polynomial, initial value, or inversion
+		if len > 0 {
+			d.loraConf.Crc = lora.CRCOn
+		} else {
+			d.loraConf.Crc = lora.CRCOff
+		}
+		d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, 0xFF, d.loraConf.Iq)
+
+	} else if pt == SX126X_PACKET_TYPE_GFSK {
+
+		switch len {
+		case 0:
+			d.crcTypeFSK = SX126X_GFSK_CRC_OFF
+		case 1:
+			if inverted {
+				d.crcTypeFSK = SX126X_GFSK_CRC_1_BYTE_INV
+			} else {
+				d.crcTypeFSK = SX126X_GFSK_CRC_1_BYTE
+			}
+		case 2:
+			if inverted {
+				d.crcTypeFSK = SX126X_GFSK_CRC_2_BYTE_INV
+			} else {
+				d.crcTypeFSK = SX126X_GFSK_CRC_2_BYTE
+			}
+		default:
+			return errInvalidCRCConfig
+		}
+		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen)
+
+		// Initial CRC
+		var p [2]uint8
+		p[0] = uint8((initial >> 8) & 0xFF)
+		p[1] = uint8(initial & 0xFF)
+		d.WriteRegister(SX126X_REG_CRC_INITIAL_MSB, p[:])
+
+		// Polynomial
+		p[0] = uint8((polynomial >> 8) & 0xFF)
+		p[1] = uint8(polynomial & 0xFF)
+		d.WriteRegister(SX126X_REG_CRC_POLYNOMIAL_MSB, p[:])
+
 	} else {
-		d.loraConf.Crc = lora.CRCOn
+		return errWrongOperation
 	}
+	return nil
 }
 
 // SetSpreadingFactor sets current Lora Spreading Factor
-// NB: Change will be applied at next RX / TX
-func (d *Device) SetSpreadingFactor(sf uint8) {
-	d.loraConf.Sf = sf
+func (d *Device) SetSpreadingFactor(sf uint8) error {
+	pt := d.GetPacketType()
+	if pt == SX126X_PACKET_TYPE_LORA {
+		d.loraConf.Sf = sf
+
+	} else {
+		return errWrongOperation
+	}
+	return d.SetModulationParams(d.loraConf.Sf, d.loraConf.Bw, d.loraConf.Cr, d.loraConf.Ldr)
 }
 
 // SetPreambleLength sets current Lora Preamble Length
-// NB: Change will be applied at next RX / TX
-// CHECKED TODO
 func (d *Device) SetPreambleLength(pl uint16) error {
 	pt := d.GetPacketType()
 	if pt == SX126X_PACKET_TYPE_LORA {
@@ -655,8 +726,8 @@ func (d *Device) SetPreambleLength(pl uint16) error {
 		d.loraConf.Preamble = pl
 		d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, 0xFF, d.loraConf.Iq)
 	} else if pt == SX126X_PACKET_TYPE_GFSK {
-		d.preambleTypeFsk = pl
-		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, 0)
+		d.preambleLengthFsk = pl
+		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen)
 	} else {
 		return errWrongOperation
 	}
@@ -665,9 +736,11 @@ func (d *Device) SetPreambleLength(pl uint16) error {
 
 // SetTxPowerDbm sets current Lora TX Power in DBm
 // NB: Change will be applied at next RX / TX
-func (d *Device) SetTxPower(txpow int8) {
+func (d *Device) SetTxPower(txpow int8) error {
 	d.txPower = txpow
 	d.loraConf.LoraTxPowerDBm = txpow
+	d.SetTxParams(txpow, SX126X_PA_RAMP_200U)
+	return nil // TODO add checks
 }
 
 // SetHeaderType sets implicit or explicit header mode
@@ -689,13 +762,58 @@ func (d *Device) SetBandwidth(bw uint8) error {
 
 // SetRxBandwidth() sets current FSK Bandwidth
 // CHECKED
-func (d *Device) SetRxBandwidth(rxbw uint8) error {
+func (d *Device) SetRxBandwidth(rxbw float64) error {
 	pt := d.GetPacketType()
 	if pt != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
-	d.rxBandwidth = rxbw
-	return d.SetModulationParams(d.loraConf.Sf, d.loraConf.Bw, d.loraConf.Cr, d.loraConf.Ldr)
+	d.rxBandwidthKhz = rxbw
+
+	if math.Abs(rxbw-4.8) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_4_8
+	} else if math.Abs(rxbw-5.8) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_5_8
+	} else if math.Abs(rxbw-7.3) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_7_3
+	} else if math.Abs(rxbw-9.7) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_9_7
+	} else if math.Abs(rxbw-11.7) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_11_7
+	} else if math.Abs(rxbw-14.6) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_14_6
+	} else if math.Abs(rxbw-19.5) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_19_5
+	} else if math.Abs(rxbw-23.4) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_23_4
+	} else if math.Abs(rxbw-29.3) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_29_3
+	} else if math.Abs(rxbw-39.0) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_39_0
+	} else if math.Abs(rxbw-46.9) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_46_9
+	} else if math.Abs(rxbw-58.6) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_58_6
+	} else if math.Abs(rxbw-78.2) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_78_2
+	} else if math.Abs(rxbw-93.8) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_93_8
+	} else if math.Abs(rxbw-117.3) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_117_3
+	} else if math.Abs(rxbw-187.2) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_187_2
+	} else if math.Abs(rxbw-234.3) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_234_3
+	} else if math.Abs(rxbw-312.0) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_312_0
+	} else if math.Abs(rxbw-373.6) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_373_6
+	} else if math.Abs(rxbw-39.0) <= 0.001 {
+		d.rxBandwidth = SX126X_GFSK_RX_BW_467_0
+	} else {
+		return errInvalidRxBandwidth
+	}
+
+	return d.SetModulationParamsFSK(d.bitRate, d.pulseShape, d.rxBandwidth, d.frequencyDev)
 }
 
 // SetDataShaping() sets Gaussian filter on FSK
@@ -705,6 +823,7 @@ func (d *Device) SetDataShaping(sh uint8) error {
 	if pt != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
+	Debug("FSK Set shaping:", sh)
 	d.pulseShape = sh
 	return d.SetModulationParamsFSK(d.bitRate, d.pulseShape, d.rxBandwidth, d.frequencyDev)
 }
@@ -720,12 +839,17 @@ func (d *Device) SetFrequencyDeviation(freqDev float64) error {
 	if freqDev < 0 {
 		freqDev = 0.6
 	}
-	// TODO RANGE CHECKS
+
+	if freqDev < 0.6 || freqDev > 200 {
+		return errInvalidFreqDev
+	}
+
 	d.frequencyDev = uint32((freqDev * 1000.0 * float64(1<<25)) / (SX126X_CRYSTAL_FREQ_MHZ * 1000000.0))
 	return d.SetModulationParamsFSK(d.bitRate, d.pulseShape, d.rxBandwidth, d.frequencyDev)
 }
 
 // SetBitRate configures bitrate
+// br is bitrate value un kbaud
 // CHECKED
 func (d *Device) SetBitRate(br float64) error {
 	pt := d.GetPacketType()
@@ -733,8 +857,48 @@ func (d *Device) SetBitRate(br float64) error {
 		return errWrongOperation
 	}
 	// TODO RANGE CHECKS
+	if br < 0.6 || br > 300 {
+		return errInvalidBaudrate
+	}
 	d.bitRate = (uint32)((SX126X_CRYSTAL_FREQ_MHZ * 1000000.0 * 32.0) / (br * 1000.0))
 	return d.SetModulationParamsFSK(d.bitRate, d.pulseShape, d.rxBandwidth, d.frequencyDev)
+}
+
+// DisableAddressFiltering configures frequency deviation
+// CHECKED
+func (d *Device) DisableAddressFiltering() error {
+	pt := d.GetPacketType()
+
+	if pt != SX126X_PACKET_TYPE_GFSK {
+		return errWrongOperation
+	}
+	d.addrComp = SX126X_GFSK_ADDRESS_FILT_OFF
+	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen))
+}
+
+// SetWhitening configures whitening
+// CHECKED
+func (d *Device) SetWhitening(enable bool, initial uint16) error {
+	pt := d.GetPacketType()
+
+	if pt != SX126X_PACKET_TYPE_GFSK {
+		return errWrongOperation
+	}
+
+	if !enable {
+		d.whitening = SX126X_GFSK_WHITENING_OFF
+	} else {
+		// Read first as in radiolib
+		dd, _ := d.ReadRegister(SX126X_REG_WHITENING_INITIAL_MSB, 1)
+
+		// Initial (mark )
+		var p [2]uint8
+		p[0] = (dd[0] & 0xFE) | (uint8((initial >> 8) & 0xFF))
+		p[1] = uint8(initial & 0xFF)
+		d.WriteRegister(SX126X_REG_WHITENING_INITIAL_MSB, p[:])
+
+	}
+	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen))
 }
 
 //
@@ -755,7 +919,7 @@ func (d *Device) LoraConfig(cnf lora.Config) {
 	d.SetDioIrqParams(0x00, 0x00, 0x00, 0x00)
 	// Define radio operation mode
 	d.SetPacketType(SX126X_PACKET_TYPE_LORA)
-	d.SetRfFrequency(d.loraConf.Freq)
+	//FIXME d.SetRfFrequency(d.loraConf.Freq)
 	d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
 	d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
 	d.SetSyncWord(d.loraConf.SyncWord)
@@ -763,81 +927,53 @@ func (d *Device) LoraConfig(cnf lora.Config) {
 }
 
 // BeginFSK prepares for FSK Operation
-func (d *Device) BeginFSK(br, freqDev, rxBw float64, preambleLength uint16, tcxoVoltage float32, useRegulatorLDO bool) error {
-	Debug("BeginFSK: br=%d freqDev=%d rxBandwidth=%f tcxoVoltage=%f useLDO=%d", br, freqDev, rxBw, tcxoVoltage, useRegulatorLDO)
-	// initialize configuration variables (will be overwritten during public settings configuration)
-	d.bitRate = 21333      // 48.0 kbps
-	d.frequencyDev = 52428 // 50.0 kHz
-	d.rxBandwidth = SX126X_GFSK_RX_BW_156_2
-	d.rxBandwidthKhz = 156.2
-	d.pulseShape = SX126X_GFSK_FILTER_GAUSS_0_5
-	d.crcTypeFSK = SX126X_GFSK_CRC_2_BYTE_INV // CCIT CRC configuration
-	d.preambleLengthFSK = preambleLength
-	d.addrComp = SX126X_GFSK_ADDRESS_FILT_OFF
+func (d *Device) BeginFSK() error {
+	Debug("BeginFSK...")
 
 	// Check radio is available
 	if !d.DetectDevice() {
 		return errRadioNotFound
 	}
+
+	// initialize configuration variables (will be overwritten during public settings configuration)
+	d.bitRate = 21333      // 48.0 kbps
+	d.frequencyDev = 52428 // 50.0 kHz
+	d.frequency = 868.925
+	d.rxBandwidth = SX126X_GFSK_RX_BW_234_3
+	d.rxBandwidthKhz = 234.3
+	d.pulseShape = SX126X_GFSK_FILTER_GAUSS_0_5
+	d.crcTypeFSK = SX126X_GFSK_CRC_2_BYTE_INV // CCIT CRC configuration
+	d.preambleLengthFSK = 512
+	d.addrComp = SX126X_GFSK_ADDRESS_FILT_OFF
+	d.whitening = SX126X_GFSK_WHITENING_OFF
+	d.preambleDetectLen = SX126X_GFSK_PREAMBLE_DETECT_16
+
 	// Reset module
 	d.Reset()
-	// set mode to standby
 	d.SetStandby()
-	// TODO : TXCO
-
-	// radio configuration()
-	d.SetBufferBaseAddress(0, 0)
-	d.SetPacketType(SX126X_PACKET_TYPE_GFSK)
 
 	// Clear errors, disable radio interrupts
 	d.ClearDeviceErrors()
 	d.ClearIrqStatus(SX126X_IRQ_ALL)
 	d.SetDioIrqParams(0x00, 0x00, 0x00, 0x00)
-	d.Calibrate(SX126X_CALIBRATE_ALL)
-	time.Sleep(time.Millisecond * 250) // FIXME ...
 
-	d.SetBitRate(br)
-	d.SetFrequencyDeviation(float64(freqDev)) // FIXME float
+	// radio configuration()
+	d.SetPacketType(SX126X_PACKET_TYPE_GFSK)
+	d.SetFrequency(d.frequency) //3
+	d.SetTxParams(10, SX126X_PA_RAMP_200U)
+	d.SetBufferBaseAddress(0, 0) // 5
 
-	d.SetBandwidth(uint8(rxBw))
-	d.SetCurrentLimit(60)
+	//Calibrate
+	//d.Calibrate(SX126X_CALIBRATE_ALL)
+	//time.Sleep(time.Millisecond * 250) // FIXME ...
+	//d.SetCurrentLimit(60)
 
-	d.SetPreambleLength(preambleLength)
-
-	// TODO LDO vs DCDC
-
-	d.SetSyncWord(0x12AD) // FIXME ?
-	d.SetDataShaping(SX126X_GFSK_FILTER_NONE)
-
-	// Whitening,encoding => TODO
-
-	// d.SetDataShaping
-	// d.SetEncoding()
-	// d.setCRC
-
-	/*
-	   // Save given configuration
-	   d.loraConf = cnf
-	   d.loraConf.SyncWord = syncword(int(cnf.SyncWord))
-	   // Switch to standby prior to configuration changes
-	   d.SetStandby()
-
-	   // Define radio operation mode
-	   d.SetPacketType(SX126X_PACKET_TYPE_LORA)
-	   d.SetRfFrequency(d.loraConf.Freq)
-	   d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
-	   d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
-	   d.SetSyncWord(d.loraConf.SyncWord)
-	   d.SetBufferBaseAddress(0, 0)
-	*/
+	println("STARTFSK ERRORS:", d.GetDeviceErrors())
 	return nil
 }
 
 // Tx sends a lora packet, (with timeout)
 func (d *Device) Tx(pkt []uint8, timeoutMs uint32) error {
-	if d.loraConf.Freq == 0 {
-		return lora.ErrUndefinedLoraConf
-	}
 
 	if d.controller != nil {
 		err := d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
@@ -848,16 +984,21 @@ func (d *Device) Tx(pkt []uint8, timeoutMs uint32) error {
 
 	d.ClearIrqStatus(SX126X_IRQ_ALL)
 	irqVal := uint16(SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR)
-	d.SetStandby()
-	d.SetPacketType(SX126X_PACKET_TYPE_LORA)
-	d.SetRfFrequency(d.loraConf.Freq)
-	d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
+	d.SetDioIrqParams(irqVal, irqVal, SX126X_IRQ_NONE, SX126X_IRQ_NONE)
+
+	/*
+		d.SetStandby()
+		d.SetPacketType(SX126X_PACKET_TYPE_LORA)
+		d.SetRfFrequency(d.loraConf.Freq)
+		d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
+		d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
+		d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, uint8(len(pkt)), d.loraConf.Iq)
+		d.SetSyncWord(d.loraConf.SyncWord)
+	*/
+
 	d.SetBufferBaseAddress(0, 0)
 	d.WriteBuffer(pkt)
-	d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
-	d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, uint8(len(pkt)), d.loraConf.Iq)
-	d.SetDioIrqParams(irqVal, irqVal, SX126X_IRQ_NONE, SX126X_IRQ_NONE)
-	d.SetSyncWord(d.loraConf.SyncWord)
+
 	d.SetTx(timeoutMsToRtcSteps(timeoutMs))
 
 	msg := <-d.GetRadioEventChan()
@@ -869,10 +1010,8 @@ func (d *Device) Tx(pkt []uint8, timeoutMs uint32) error {
 
 // LoraRx tries to receive a Lora packet (with timeout in milliseconds)
 func (d *Device) Rx(timeoutMs uint32) ([]uint8, error) {
-	if d.loraConf.Freq == 0 {
-		return nil, lora.ErrUndefinedLoraConf
-	}
 
+	// Enable RX Switch
 	if d.controller != nil {
 		err := d.controller.SetRfSwitchMode(RFSWITCH_RX)
 		if err != nil {
@@ -880,31 +1019,55 @@ func (d *Device) Rx(timeoutMs uint32) ([]uint8, error) {
 		}
 	}
 
+	// Disable interrupts
 	d.ClearIrqStatus(SX126X_IRQ_ALL)
 	irqVal := uint16(SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR)
-	//d.SetStandby()
-	//d.SetBufferBaseAddress(0, 0)
-	//d.SetRfFrequency(d.loraConf.Freq)
-	//d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
-	//d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, 0xFF, d.loraConf.Iq)
+
+	//	d.SetStandby()
+	//	d.SetBufferBaseAddress(0, 0)
+	//d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen)
+
+	//Debug("RX() set irq params")
 	d.SetDioIrqParams(irqVal, irqVal, SX126X_IRQ_NONE, SX126X_IRQ_NONE)
+	//Debug("Set RX Mode")
 	d.SetRx(timeoutMsToRtcSteps(timeoutMs))
 
 	msg := <-d.GetRadioEventChan()
 
-	if msg.EventType == lora.RadioEventTimeout {
+	switch msg.EventType {
+	case lora.RadioEventTimeout:
+		//	Debug("RadioEventTimeout IRQ Status:%d", msg.IRQStatus)
 		return nil, nil
-	} else if msg.EventType != lora.RadioEventRxDone {
-		Debug(msg.EventType, msg.IRQStatus)
-		return nil, errUnexpectedRxRadioEvent
+	case lora.RadioEventCrcError:
+		//	Debug("RadioEventCrcError IRQ Status:%d", msg.IRQStatus)
+		return nil, nil
+	case lora.RadioEventRxDone:
+		//	Debug("RadioEventRxDone IRQ Status:%d", msg.IRQStatus)
+		pLen, pStart := d.GetRxBufferStatus()
+		d.SetBufferBaseAddress(0, pStart+1)
+		pkt := d.ReadBuffer(pLen + 1)
+		pkt = pkt[1:]
+		return pkt, nil
+	case lora.RadioEventWatchdog:
+		//	Debug("RadioEventWatchdog IRQ Status:%d", msg.IRQStatus)
+		return nil, nil
+	case lora.RadioEventUnhandled:
+		//	Debug("RadioEventUnhandled IRQ Status:%d", msg.IRQStatus)
+		return nil, nil
+
 	}
 
-	pLen, pStart := d.GetRxBufferStatus()
-	d.SetBufferBaseAddress(0, pStart+1)
-	pkt := d.ReadBuffer(pLen + 1)
-	pkt = pkt[1:]
+	/*
+		if msg.EventType == lora.RadioEventTimeout {
+			Debug("RXTimeout, IRQ Status:%d", msg.IRQStatus)
+			return nil, nil
+		} else if msg.EventType != lora.RadioEventRxDone {
+			Debug("EventType:%d IRQ Status:%d", msg.EventType, msg.IRQStatus)
+			return nil, errUnexpectedRxRadioEvent
+		} else if msg.EventType != lora.RadioEventUnhandled {
+	*/
+	return nil, errWrongOperation
 
-	return pkt, nil
 }
 
 // HandleInterrupt must be called by main code on DIO state change.
@@ -937,7 +1100,6 @@ func (d *Device) HandleInterrupt() {
 	if (st & SX126X_IRQ_CRC_ERR) > 0 {
 		select {
 		case d.radioEventChan <- lora.RadioEvent{lora.RadioEventCrcError, uint16(st), nil}:
-
 		default:
 		}
 	}
@@ -980,6 +1142,6 @@ func syncword(sw int) uint16 {
 
 func Debug(a ...interface{}) {
 	if debug {
-		fmt.Println(fmt.Sprintln(a...))
+		println("DBG", fmt.Sprint(a...))
 	}
 }

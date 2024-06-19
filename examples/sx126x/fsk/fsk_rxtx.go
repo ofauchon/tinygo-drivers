@@ -4,6 +4,7 @@ package main
 // module will be in RX mode between two transmissions
 
 import (
+	"log"
 	"machine"
 	"time"
 
@@ -11,8 +12,12 @@ import (
 )
 
 const (
-	RXTIMEOUT_MS = 1000
+	RXTIMEOUT_MS = 2000
 	TXTIMEOUT_MS = 5000
+
+	IOHC_RADIO1 = 868.250
+	IOHC_RADIO2 = 868.950
+	IOHC_RADIO3 = 868.850
 )
 
 var (
@@ -20,8 +25,14 @@ var (
 	txmsg = []byte("Hello TinyGO")
 )
 
+// check() handle error and fatal if not nil
+func check(key string, e error) {
+	if e != nil {
+		log.Fatal("FATAL: ", key, ":", e)
+	}
+}
+
 func main() {
-	time.Sleep(3 * time.Second)
 
 	println("\n# TinyGo FSK RX/TX test")
 	println("# ----------------------")
@@ -29,52 +40,64 @@ func main() {
 
 	// Create the driver
 	radio = sx126x.New(spi)
+	// Select proper SX126x variant (SX1262 on WL55JC)
 	radio.SetDeviceType(sx126x.DEVICE_TYPE_SX1262)
 
-	// Create radio controller for target
+	// RadioControl will handle board-specific radio HW (eg:SPI)
 	radio.SetRadioController(newRadioControl())
 
-	// Detect the device
+	// Ensure the radio module is connected
 	if state := radio.DetectDevice(); !state {
 		panic("sx126x not detected.")
 	}
 
-	// Configure radio
-	radio.BeginFSK(0, 0, 0, 0, 0, false)
-	radio.SetFrequency(868850)
-	radio.SetPreambleLength(512)
-	radio.SetTxPower(20)
-	//radio.SetCurrentLimit(20)
-	//radio.SetSyncWord(0x7fd9)
-	//	radio.setRxBoostedGainMode(true)
-	radio.SetBitRate(38.4)
-	radio.SetFrequencyDeviation(19.2)
-	radio.SetDataShaping(sx126x.SX126X_GFSK_FILTER_NONE)
-	//radio.SetEncoding(RADIOLIB_ENCODING_NRZ)
-	radio.SetRxBandwidth(sx126x.SX126X_GFSK_RX_BW_234_3)
-	//radio.SetCRC(0, 0x0000, 0x8408, false)
-	//radio.DisableAddressFiltering()
+	// Prepare radio for FSK communications
+	check("begin_fsk", radio.BeginFSK())
+
+	// Custom Radio configuration
+
+	check("SetFrequency", radio.SetFrequency(IOHC_RADIO2)) // <<<<< fixme
+
+	check("SetPreambleLength", radio.SetPreambleLength(512))
+	check("SetTxPower", radio.SetTxPower(10))
+	check("SetCurrentLimit", radio.SetCurrentLimit(100))
+	check("SetBitRate", radio.SetBitRate(38.4))
+	check("SetFrequencyDeviation", radio.SetFrequencyDeviation(19.2))
+	check("SetDataShaping", radio.SetDataShaping(sx126x.SX126X_GFSK_FILTER_NONE))
+	check("SetRxBandwidth", radio.SetRxBandwidth(234.3))
+	check("SetCrc", radio.SetCrc(0, 0x0000, 0x8408, false))
+	check("DisableAddressFiltering", radio.DisableAddressFiltering())
+	check("SetWhitening", radio.SetWhitening(false, 0x00))
+
+	println("Radio configuration done")
+	println("ERRORS:", radio.GetDeviceErrors())
+
+	println("FSK TX size=", len(txmsg), " -> ", string(txmsg))
+	err := radio.Tx(txmsg, TXTIMEOUT_MS)
+	if err != nil {
+		println("TX Error:", err)
+	}
+	println("ERRORS:", radio.GetDeviceErrors())
 
 	var count uint
 	for {
 		start := time.Now()
 
-		println("main: Receiving FSK for 10 seconds")
-		for time.Since(start) < 10*time.Second {
+		println("main: Receiving FSK for 5 seconds")
+		for time.Since(start) < 5*time.Second {
 			buf, err := radio.Rx(RXTIMEOUT_MS)
 			if err != nil {
 				println("RX Error: ", err)
-			} else if buf != nil {
+			} else if len(buf) == 0 {
+				println("Packet Empty")
+			} else if len(buf) > 0 {
 				println("Packet Received: len=", len(buf), string(buf))
 			}
 		}
 		println("main: End FSK RX")
-		println("FSK TX size=", len(txmsg), " -> ", string(txmsg))
-		err := radio.Tx(txmsg, TXTIMEOUT_MS)
-		if err != nil {
-			println("TX Error:", err)
-		}
+
 		count++
+
 	}
 
 }
