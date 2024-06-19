@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"machine"
@@ -64,10 +65,10 @@ type Device struct {
 	spiTxBuf       []byte               // global Tx buffer to avoid heap allocations in interrupt
 	spiRxBuf       []byte               // global Rx buffer to avoid heap allocations in interrupt
 
-	frequencyDeviation uint32  // Fréquency deviation (after register convertion)
-	frequency          float32 // Fréquency deviation (after register convertion)
-	preambleTypeLora   uint16  // Preamble length while in Lora
-	txPower            int8    // TX Power in dB
+	frequencyDeviation uint32 // Fréquency deviation (after register convertion)
+	frequencyKhz       uint32 // Fréquency deviation (after register convertion)
+	preambleTypeLora   uint16 // Preamble length while in Lora
+	txPower            int8   // TX Power in dB
 
 	// Internal configuration .. Not externaly usable (most are raw register values)
 	rxBandwidthKhz    float64
@@ -81,7 +82,8 @@ type Device struct {
 	addrComp          uint32
 	syncWordLength    uint8
 	whitening         uint8
-	packetType        uint8
+	packetType        uint8 // Variable ou fixed
+	packetTypeLen     uint8 // length of packet (depends variable/fixed)
 	preambleDetectLen uint8
 }
 
@@ -147,17 +149,19 @@ func (d *Device) Reset() {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// DetectDevice() tries to detect the radio module by changing and reading SyncWord value
+// DetectDevice() tries to detect the radio module
+// it returns true if device is found
 func (d *Device) DetectDevice() bool {
-	bak := d.GetSyncWord()
-	d.SetSyncWord(0xBEEF)
-	tmp := d.GetSyncWord()
-	if tmp != 0xBEEF {
-		return false
-	} else {
-		d.SetSyncWord(bak)
-		return true
+	dat, err := d.ReadRegister(SX126X_REG_VERSION_STRING, 16)
+	if err == nil {
+		ver := string(dat)
+		println("SX126X ID:", ver)
+		if strings.Contains(ver, SX1261_CHIP_TYPE_STRING_ID) {
+			d.SetDeviceType(DEVICE_TYPE_SX1262)
+			return true
+		}
 	}
+	return false
 }
 
 // SetSleep sets the device in SLEEP mode with the lowest current consumption possible.
@@ -411,15 +415,13 @@ func (d *Device) GetLoraStats() (nbPktReceived, nbPktCrcError, nbPktHeaderErr ui
 
 // SetPacketType sets the packet type
 func (d *Device) SetPacketType(packetType uint8) {
-	Debug("Set Packet Type: ", packetType)
-	d.packetType = packetType
 	var p [1]uint8
 	p[0] = packetType
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_TYPE, p[:])
 }
 
-// SetSyncWord defines the Sync Word to use in LORA mode
-func (d *Device) SetSyncWord(sw uint16) {
+// SetLoraSyncWord defines the Sync Word to use in LORA mode
+func (d *Device) SetLoraSyncWord(sw uint16) {
 	var p [2]uint8
 	d.loraConf.SyncWord = sw
 	p[0] = uint8((d.loraConf.SyncWord >> 8) & 0xFF)
@@ -436,20 +438,20 @@ func (d *Device) GetSyncWord() uint16 {
 
 // SetPublicNetwork sets Sync Word to 0x3444 (Public) or 0x1424 (Private)
 func (d *Device) SetPublicNetwork(enable bool) error {
-	if d.packetType != SX126X_PACKET_TYPE_LORA {
+	pt := d.GetPacketType()
+	if pt != SX126X_PACKET_TYPE_LORA {
 		return errWrongOperation
 	}
 	if enable {
-		d.SetSyncWord(SX126X_LORA_MAC_PUBLIC_SYNCWORD)
+		d.SetLoraSyncWord(SX126X_LORA_MAC_PUBLIC_SYNCWORD)
 	} else {
-		d.SetSyncWord(SX126X_LORA_MAC_PRIVATE_SYNCWORD)
+		d.SetLoraSyncWord(SX126X_LORA_MAC_PRIVATE_SYNCWORD)
 	}
 	return nil
 }
 
 // SetPacketParam sets various packet-related params
 func (d *Device) SetPacketParam(preambleLength uint16, headerType, crcType, payloadLength, invertIQ uint8) error {
-
 	var p [6]uint8
 	p[0] = uint8((preambleLength >> 8) & 0xFF)
 	p[1] = uint8(preambleLength & 0xFF)
@@ -462,7 +464,7 @@ func (d *Device) SetPacketParam(preambleLength uint16, headerType, crcType, payl
 }
 
 // SetPacketParamFSK sets various FSK packet-related params
-func (d *Device) SetPacketParamFSK(preambleLen uint16, crcType uint8, syncWordLen uint8, addrCmp uint8, whiten uint8, packType uint8, payloadLen uint8, preambleDetectorLen uint8) error {
+func (d *Device) SetPacketParamFSK(preambleLen uint16, crcType uint8, syncWordLen uint8, addrCmp uint8, whiten uint8, packType uint8, packTypeLen uint8, preambleDetectorLen uint8) error {
 	var p [9]uint8
 	p[0] = uint8((preambleLen >> 8) & 0xFF)
 	p[1] = uint8(preambleLen & 0xFF)
@@ -470,7 +472,7 @@ func (d *Device) SetPacketParamFSK(preambleLen uint16, crcType uint8, syncWordLe
 	p[3] = syncWordLen
 	p[4] = addrCmp
 	p[5] = packType
-	p[6] = payloadLen
+	p[6] = packTypeLen
 	p[7] = crcType
 	p[8] = whiten
 	d.ExecSetCommand(SX126X_CMD_SET_PACKET_PARAMS, p[:])
@@ -487,10 +489,11 @@ func (d *Device) SetBufferBaseAddress(txBaseAddress, rxBaseAddress uint8) {
 }
 
 // SetFrequency sets the radio frequency
-// freq is the new frequency, in mhz (eg 868,120)
-func (d *Device) SetFrequency(freq float32) error {
+// freq is the new frequency, in khz (eg 868120)
+func (d *Device) SetFrequency(freq uint32) error {
 	var p [4]uint8
-	frf := uint32(freq*float32(uint64(1)<<SX126X_DIV_EXPONENT)) / SX126X_CRYSTAL_FREQ_MHZ
+
+	frf := (uint64(freq) * (uint64(1) << SX126X_DIV_EXPONENT)) / (SX126X_CRYSTAL_FREQ_MHZ * 1000)
 	frf = 0x364ECCCC
 	p[0] = uint8((frf >> 24) & 0xFF)
 	p[1] = uint8((frf >> 16) & 0xFF)
@@ -545,7 +548,8 @@ func (d *Device) SetTxParams(power int8, rampTime uint8) {
 
 // SetModulationParams sets the Lora modulation frequency
 func (d *Device) SetModulationParams(spreadingFactor, bandwidth, codingRate, lowDataRateOptimize uint8) error {
-	if d.packetType != SX126X_PACKET_TYPE_LORA {
+	pt := d.GetPacketType()
+	if pt != SX126X_PACKET_TYPE_LORA {
 		return errWrongOperation
 	}
 	var p [4]uint8
@@ -559,8 +563,8 @@ func (d *Device) SetModulationParams(spreadingFactor, bandwidth, codingRate, low
 
 // SetModulationParamsFSK sets the FSK modulation parameters
 func (d *Device) SetModulationParamsFSK(baudRate uint32, pulseShape uint8, rxBandwidth uint8, freqDeviation uint32) error {
-
-	if d.packetType != SX126X_PACKET_TYPE_GFSK {
+	pt := d.GetPacketType()
+	if pt != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
 	var p [8]uint8
@@ -655,6 +659,23 @@ func (d *Device) SetCodingRate(cr uint8) {
 	d.loraConf.Cr = cr
 }
 
+// SetSyncWord defines the Sync Word
+func (d *Device) SetSyncWord(sw []uint8) error {
+	pt := d.GetPacketType()
+	if pt == SX126X_PACKET_TYPE_GFSK {
+		// Write sync words
+		d.WriteRegister(SX126X_REG_SYNC_WORD_0, sw[:])
+
+		// Save size
+		d.syncWordLength = uint8(len(sw)) * 8
+		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen)
+
+	} else {
+		return errWrongOperation
+	}
+	return nil
+}
+
 // SetCrc() sets current CRC
 func (d *Device) SetCrc(len uint8, initial uint16, polynomial uint16, inverted bool) error {
 	pt := d.GetPacketType()
@@ -687,7 +708,7 @@ func (d *Device) SetCrc(len uint8, initial uint16, polynomial uint16, inverted b
 		default:
 			return errInvalidCRCConfig
 		}
-		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen)
+		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen)
 
 		// Initial CRC
 		var p [2]uint8
@@ -727,7 +748,7 @@ func (d *Device) SetPreambleLength(pl uint16) error {
 		d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, 0xFF, d.loraConf.Iq)
 	} else if pt == SX126X_PACKET_TYPE_GFSK {
 		d.preambleLengthFsk = pl
-		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen)
+		d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen)
 	} else {
 		return errWrongOperation
 	}
@@ -807,7 +828,7 @@ func (d *Device) SetRxBandwidth(rxbw float64) error {
 		d.rxBandwidth = SX126X_GFSK_RX_BW_312_0
 	} else if math.Abs(rxbw-373.6) <= 0.001 {
 		d.rxBandwidth = SX126X_GFSK_RX_BW_373_6
-	} else if math.Abs(rxbw-39.0) <= 0.001 {
+	} else if math.Abs(rxbw-467.0) <= 0.001 {
 		d.rxBandwidth = SX126X_GFSK_RX_BW_467_0
 	} else {
 		return errInvalidRxBandwidth
@@ -844,7 +865,7 @@ func (d *Device) SetFrequencyDeviation(freqDev float64) error {
 		return errInvalidFreqDev
 	}
 
-	d.frequencyDev = uint32((freqDev * 1000.0 * float64(1<<25)) / (SX126X_CRYSTAL_FREQ_MHZ * 1000000.0))
+	d.frequencyDev = uint32(((freqDev * 1000.0) * float64(uint32(1)<<25)) / (SX126X_CRYSTAL_FREQ_MHZ * 1000000.0))
 	return d.SetModulationParamsFSK(d.bitRate, d.pulseShape, d.rxBandwidth, d.frequencyDev)
 }
 
@@ -868,19 +889,28 @@ func (d *Device) SetBitRate(br float64) error {
 // CHECKED
 func (d *Device) DisableAddressFiltering() error {
 	pt := d.GetPacketType()
-
 	if pt != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
 	d.addrComp = SX126X_GFSK_ADDRESS_FILT_OFF
-	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen))
+	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen))
+}
+
+// SetPacketMode
+func (d *Device) SetPacketMode(mode, len uint8) error {
+	pt := d.GetPacketType()
+	if pt != SX126X_PACKET_TYPE_GFSK {
+		return errWrongOperation
+	}
+	d.packetType = mode
+	d.packetTypeLen = len
+	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen))
 }
 
 // SetWhitening configures whitening
 // CHECKED
 func (d *Device) SetWhitening(enable bool, initial uint16) error {
 	pt := d.GetPacketType()
-
 	if pt != SX126X_PACKET_TYPE_GFSK {
 		return errWrongOperation
 	}
@@ -888,17 +918,18 @@ func (d *Device) SetWhitening(enable bool, initial uint16) error {
 	if !enable {
 		d.whitening = SX126X_GFSK_WHITENING_OFF
 	} else {
+		d.whitening = SX126X_GFSK_WHITENING_ON
 		// Read first as in radiolib
 		dd, _ := d.ReadRegister(SX126X_REG_WHITENING_INITIAL_MSB, 1)
 
 		// Initial (mark )
 		var p [2]uint8
-		p[0] = (dd[0] & 0xFE) | (uint8((initial >> 8) & 0xFF))
+		p[0] = (dd[0] & 0xFE) | (uint8((initial >> 8) & 0x01))
 		p[1] = uint8(initial & 0xFF)
 		d.WriteRegister(SX126X_REG_WHITENING_INITIAL_MSB, p[:])
 
 	}
-	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, 0, d.preambleDetectLen))
+	return (d.SetPacketParamFSK(d.preambleLengthFSK, d.crcTypeFSK, d.syncWordLength, uint8(d.addrComp), d.whitening, d.packetType, d.packetTypeLen, d.preambleDetectLen))
 }
 
 //
@@ -922,7 +953,7 @@ func (d *Device) LoraConfig(cnf lora.Config) {
 	//FIXME d.SetRfFrequency(d.loraConf.Freq)
 	d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
 	d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
-	d.SetSyncWord(d.loraConf.SyncWord)
+	//FXME d.SetSyncWord(d.loraConf.SyncWord)
 	d.SetBufferBaseAddress(0, 0)
 }
 
@@ -938,7 +969,7 @@ func (d *Device) BeginFSK() error {
 	// initialize configuration variables (will be overwritten during public settings configuration)
 	d.bitRate = 21333      // 48.0 kbps
 	d.frequencyDev = 52428 // 50.0 kHz
-	d.frequency = 868.925
+	d.frequencyKhz = 868925
 	d.rxBandwidth = SX126X_GFSK_RX_BW_234_3
 	d.rxBandwidthKhz = 234.3
 	d.pulseShape = SX126X_GFSK_FILTER_GAUSS_0_5
@@ -947,6 +978,8 @@ func (d *Device) BeginFSK() error {
 	d.addrComp = SX126X_GFSK_ADDRESS_FILT_OFF
 	d.whitening = SX126X_GFSK_WHITENING_OFF
 	d.preambleDetectLen = SX126X_GFSK_PREAMBLE_DETECT_16
+	d.packetType = SX126X_GFSK_PACKET_VARIABLE
+	d.packetTypeLen = SX126X_MAX_PACKET_LENGTH
 
 	// Reset module
 	d.Reset()
@@ -959,14 +992,14 @@ func (d *Device) BeginFSK() error {
 
 	// radio configuration()
 	d.SetPacketType(SX126X_PACKET_TYPE_GFSK)
-	d.SetFrequency(d.frequency) //3
+	d.SetFrequency(d.frequencyKhz) //
 	d.SetTxParams(10, SX126X_PA_RAMP_200U)
 	d.SetBufferBaseAddress(0, 0) // 5
 
-	//Calibrate FIXME : Add calibration
-	//d.Calibrate(SX126X_CALIBRATE_ALL)
-	//time.Sleep(time.Millisecond * 250) // FIXME ...
-	//d.SetCurrentLimit(60)
+	//Calibration
+	d.Calibrate(SX126X_CALIBRATE_ALL)
+	time.Sleep(time.Millisecond * 250) // FIXME ...
+	d.SetCurrentLimit(60)
 
 	println("STARTFSK ERRORS:", d.GetDeviceErrors())
 	return nil

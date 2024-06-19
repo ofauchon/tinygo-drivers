@@ -15,9 +15,9 @@ const (
 	RXTIMEOUT_MS = 2000
 	TXTIMEOUT_MS = 5000
 
-	IOHC_RADIO1 = 868.250
-	IOHC_RADIO2 = 868.950
-	IOHC_RADIO3 = 868.850
+	IOHC_RADIO1 = 868250
+	IOHC_RADIO2 = 868950
+	IOHC_RADIO3 = 869850
 )
 
 var (
@@ -40,8 +40,6 @@ func main() {
 
 	// Create the driver
 	radio = sx126x.New(spi)
-	// Select proper SX126x variant (SX1262 on WL55JC)
-	radio.SetDeviceType(sx126x.DEVICE_TYPE_SX1262)
 
 	// RadioControl will handle board-specific radio HW (eg:SPI)
 	radio.SetRadioController(newRadioControl())
@@ -56,10 +54,9 @@ func main() {
 
 	// Custom Radio configuration
 
-	check("SetFrequency", radio.SetFrequency(IOHC_RADIO2)) // <<<<< fixme
-
+	check("SetFrequency", radio.SetFrequency(IOHC_RADIO2))
 	check("SetPreambleLength", radio.SetPreambleLength(512))
-	check("SetTxPower", radio.SetTxPower(10))
+	check("SetTxPower", radio.SetTxPower(20))
 	check("SetCurrentLimit", radio.SetCurrentLimit(100))
 	check("SetBitRate", radio.SetBitRate(38.4))
 	check("SetFrequencyDeviation", radio.SetFrequencyDeviation(19.2))
@@ -68,6 +65,8 @@ func main() {
 	check("SetCrc", radio.SetCrc(0, 0x0000, 0x8408, false))
 	check("DisableAddressFiltering", radio.DisableAddressFiltering())
 	check("SetWhitening", radio.SetWhitening(false, 0x00))
+	check("SetPacketType", radio.SetPacketMode(sx126x.SX126X_GFSK_PACKET_VARIABLE, sx126x.SX126X_MAX_PACKET_LENGTH))
+	check("SetSyncWord", radio.SetSyncWord([]uint8{0x7f, 0xd9}))
 
 	println("Radio configuration done")
 	println("ERRORS:", radio.GetDeviceErrors())
@@ -83,8 +82,8 @@ func main() {
 	for {
 		start := time.Now()
 
-		println("main: Receiving FSK for 5 seconds")
-		for time.Since(start) < 5*time.Second {
+		println("main: Receiving FSK for 60 seconds")
+		for time.Since(start) < 60*time.Second {
 			buf, err := radio.Rx(RXTIMEOUT_MS)
 			if err != nil {
 				println("RX Error: ", err)
