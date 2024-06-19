@@ -926,7 +926,7 @@ func (d *Device) LoraConfig(cnf lora.Config) {
 	d.SetBufferBaseAddress(0, 0)
 }
 
-// BeginFSK prepares for FSK Operation
+// BeginFSK prepares for FSK operation
 func (d *Device) BeginFSK() error {
 	Debug("BeginFSK...")
 
@@ -963,7 +963,7 @@ func (d *Device) BeginFSK() error {
 	d.SetTxParams(10, SX126X_PA_RAMP_200U)
 	d.SetBufferBaseAddress(0, 0) // 5
 
-	//Calibrate
+	//Calibrate FIXME : Add calibration
 	//d.Calibrate(SX126X_CALIBRATE_ALL)
 	//time.Sleep(time.Millisecond * 250) // FIXME ...
 	//d.SetCurrentLimit(60)
@@ -972,9 +972,12 @@ func (d *Device) BeginFSK() error {
 	return nil
 }
 
-// Tx sends a lora packet, (with timeout)
+// Tx sends a packet
+// pkt is actual payload
+// timeoutMs is TX timeout in ms
 func (d *Device) Tx(pkt []uint8, timeoutMs uint32) error {
 
+	// Switch TX antenna
 	if d.controller != nil {
 		err := d.controller.SetRfSwitchMode(RFSWITCH_TX_HP)
 		if err != nil {
@@ -982,25 +985,17 @@ func (d *Device) Tx(pkt []uint8, timeoutMs uint32) error {
 		}
 	}
 
+	// Clear IRQ
 	d.ClearIrqStatus(SX126X_IRQ_ALL)
 	irqVal := uint16(SX126X_IRQ_TX_DONE | SX126X_IRQ_TIMEOUT | SX126X_IRQ_CRC_ERR)
 	d.SetDioIrqParams(irqVal, irqVal, SX126X_IRQ_NONE, SX126X_IRQ_NONE)
 
-	/*
-		d.SetStandby()
-		d.SetPacketType(SX126X_PACKET_TYPE_LORA)
-		d.SetRfFrequency(d.loraConf.Freq)
-		d.SetTxParams(d.loraConf.LoraTxPowerDBm, SX126X_PA_RAMP_200U)
-		d.SetModulationParams(d.loraConf.Sf, bandwidth(d.loraConf.Bw), d.loraConf.Cr, d.loraConf.Ldr)
-		d.SetPacketParam(d.loraConf.Preamble, d.loraConf.HeaderType, d.loraConf.Crc, uint8(len(pkt)), d.loraConf.Iq)
-		d.SetSyncWord(d.loraConf.SyncWord)
-	*/
-
+	// Write packet to buffer and send
 	d.SetBufferBaseAddress(0, 0)
 	d.WriteBuffer(pkt)
-
 	d.SetTx(timeoutMsToRtcSteps(timeoutMs))
 
+	// Wait radio event
 	msg := <-d.GetRadioEventChan()
 	if msg.EventType != lora.RadioEventTxDone {
 		return errUnexpectedTxRadioEvent
