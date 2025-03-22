@@ -11,6 +11,11 @@ import (
 	"errors"
 
 	"tinygo.org/x/drivers"
+	"tinygo.org/x/drivers/pixel"
+)
+
+var (
+	errOutOfRange = errors.New("out of screen range")
 )
 
 // Rotation controls the rotation used by the display.
@@ -38,6 +43,7 @@ type Device struct {
 	orientation     Orientation
 	batchLength     int16
 	batchData       []uint8
+	rotation        drivers.Rotation
 }
 
 // Config is the configuration for the display
@@ -189,6 +195,35 @@ func (d *Device) FillRectangleWithBuffer(x, y, width, height int16, buffer []col
 	return nil
 }
 
+// DrawBitmap copies the bitmap to the screen at the given coordinates.
+func (d *Device) DrawBitmap(x, y int16, bitmap pixel.Image[pixel.RGB565BE]) error {
+	w, h := bitmap.Size()
+	buf := make([]color.RGBA, w*h)
+
+	for py := 0; py < h; py++ {
+		for px := 0; px < w; px++ {
+			buf[py*w+px] = bitmap.Get(px, py).RGBA()
+		}
+	}
+	return d.FillRectangleWithBuffer(x, y, int16(w), int16(h), buf)
+}
+
+// SetRotation changes the rotation (clock-wise) of the device
+func (d *Device) SetRotation(rotation drivers.Rotation) error {
+	d.rotation = rotation
+	return nil
+}
+
+// Set the sleep mode for this display.
+func (d *Device) Sleep(sleepEnabled bool) error {
+	return nil
+}
+
+// Rotation returns the currently configured rotation.
+func (d *Device) Rotation() drivers.Rotation {
+	return d.rotation
+}
+
 // DrawFastVLine draws a vertical line faster than using SetPixel
 func (d *Device) DrawFastVLine(x, y0, y1 int16, c color.RGBA) {
 	if y0 > y1 {
@@ -297,6 +332,12 @@ func RGBATo565(c color.RGBA) uint16 {
 	return uint16((r & 0xF800) +
 		((g & 0xFC00) >> 5) +
 		((b & 0xF800) >> 11))
+}
+
+// ClearDisplay erases the device SRAM
+func (d *Device) ClearDisplay() {
+	d.FillScreen(color.RGBA{R: 0, G: 0, B: 0, A: 255})
+
 }
 
 // Configure initializes the display with default configuration
